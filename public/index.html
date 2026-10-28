@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Furniture Sales Assistant</title>
+<style>
+:root{--bg:#eef1f4;--sf:#fff;--ink:#17212b;--mu:#5d6b79;--ln:#d9dfe5;--ac:#1f5fd6;--ai:#fff;--ok:#18794e;--wn:#a24b05;--er:#c0261c;color-scheme:light}
+@media(prefers-color-scheme:dark){:root{--bg:#0f161d;--sf:#18222c;--ink:#e8edf2;--mu:#9aa8b5;--ln:#2b3946;--ac:#5b97ff;--ai:#0a1220;--ok:#4fd18b;--wn:#f0a24a;--er:#ff7b72;color-scheme:dark}}
+*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+#app{display:grid;grid-template-columns:200px 1fr;min-height:100vh}nav{background:var(--sf);border-right:1px solid var(--ln);padding:14px 10px;position:sticky;top:0;height:100vh;overflow:auto}
+nav h1{font-size:16px;margin:0 8px 12px}nav a{display:flex;justify-content:space-between;align-items:center;color:var(--ink);text-decoration:none;padding:8px 10px;border-radius:8px;font-weight:600;cursor:pointer}nav a.on{background:var(--ac);color:var(--ai)}nav a:hover:not(.on){background:var(--bg)}
+main{padding:20px;max-width:1150px;width:100%}h2{font-size:22px;margin:0 0 4px}h3{font-size:16px;margin:0 0 10px}.sub{color:var(--mu);margin:0 0 16px}
+.box{background:var(--sf);border:1px solid var(--ln);border-radius:12px;padding:16px;margin-bottom:14px}.grid{display:grid;gap:12px}.g2{grid-template-columns:1fr 1fr}.g3{grid-template-columns:repeat(3,1fr)}.g4{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+label{display:block;font-weight:600;font-size:13px;margin:8px 0 3px}input,select,textarea{width:100%;font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--ln);border-radius:8px;padding:8px 10px}textarea{min-height:70px;resize:vertical}input[type=checkbox]{width:auto}
+button{font:inherit;font-weight:700;background:var(--ac);color:var(--ai);border:0;border-radius:8px;padding:8px 14px;cursor:pointer}button.alt{background:none;color:var(--ink);border:1px solid var(--ln)}button.sm{padding:4px 10px;font-size:13px}button.bad{background:var(--er)}button:disabled{opacity:.5}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}.mu{color:var(--mu);font-size:13.5px}.ok{color:var(--ok);font-weight:700}.wn{color:var(--wn);font-weight:700}.er{color:var(--er);font-weight:700}
+.stat{background:var(--sf);border:1px solid var(--ln);border-radius:12px;padding:12px}.stat b{font-size:26px;display:block}.badge{display:inline-block;border-radius:99px;padding:1px 9px;font-size:12px;font-weight:700;background:var(--bg);border:1px solid var(--ln)}.badge.r{background:var(--er);color:#fff;border:0}.badge.g{background:var(--ok);color:var(--ai);border:0}.badge.o{background:var(--wn);color:#fff;border:0}
+.banner{border-radius:10px;padding:10px 14px;margin-bottom:14px;font-weight:600}.banner.dry{background:#fff3d6;color:#6b4300;border:1px solid #e6c36a}.banner.live{background:#fde4e1;color:#7a1a12;border:1px solid #e79790}
+.chat{display:grid;grid-template-columns:240px 1fr 320px;gap:12px;height:calc(100vh - 120px)}.chat>div{background:var(--sf);border:1px solid var(--ln);border-radius:12px;overflow:auto;padding:10px}
+.cust{padding:8px;border-radius:8px;cursor:pointer;border:1px solid transparent}.cust:hover,.cust.on{background:var(--bg);border-color:var(--ln)}.thread{display:flex;flex-direction:column;gap:8px;padding:8px 2px}
+.msg{max-width:80%;padding:8px 12px;border-radius:14px;white-space:pre-wrap;word-break:break-word}.msg.in{background:var(--bg);border:1px solid var(--ln);align-self:flex-start}.msg.out{background:var(--ac);color:var(--ai);align-self:flex-end}.msg small{display:block;opacity:.75;font-size:11px;margin-top:3px}
+.q{border-left:4px solid var(--wn)}.q.complaint{border-left-color:var(--er)}.ctx{background:var(--bg);border-radius:8px;padding:8px;margin:8px 0;font-size:13.5px}.ctx div{margin:2px 0}
+table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:6px 8px;border-top:1px solid var(--ln);vertical-align:top;font-size:14px}th{color:var(--mu);font-size:12.5px}
+.thumbs{display:flex;gap:8px;flex-wrap:wrap}.thumbs img{width:84px;height:84px;object-fit:cover;border-radius:8px;border:1px solid var(--ln)}
+#toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:8px;font-weight:600;max-width:90vw;display:none;z-index:9}
+#login{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:20}#login .box{width:340px}
+@media(max-width:900px){#app{grid-template-columns:1fr}nav{position:static;height:auto;display:flex;flex-wrap:wrap;gap:4px}nav h1{width:100%}.chat{grid-template-columns:1fr;height:auto}.g2,.g3{grid-template-columns:1fr}}
+</style></head>
+<body><div id="login" hidden><div class="box"><h3>Furniture Sales Assistant</h3><p class="mu">Enter your access key. It is in <b>.env</b> (ADMIN_KEY) or in <b>data/admin.key</b>.</p><input id="key" type="password" placeholder="Access key" autocomplete="current-password"><div class="row"><button id="go">Open</button></div><p id="lerr" class="er"></p></div></div>
+<div id="app" hidden><nav id="nav"></nav><main id="main"></main></div><div id="toast" role="status"></div><script src="app.js"></script></body></html>

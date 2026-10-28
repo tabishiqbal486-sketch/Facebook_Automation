@@ -1,0 +1,12 @@
+{
+  "name": "furniture-sales-assistant",
+  "version": "2.0.0",
+  "description": "AI-assisted Facebook sales assistant for a UK furniture business. No third-party packages.",
+  "main": "src/server.js",
+  "bin": "src/server.js",
+  "scripts": { "start": "node src/server.js", "test": "node tests/run-tests.js" },
+  "engines": { "node": ">=18" },
+  "pkg": { "assets": ["public/**/*"], "targets": ["node20-win-x64"] },
+  "license": "UNLICENSED",
+  "private": true
+}
