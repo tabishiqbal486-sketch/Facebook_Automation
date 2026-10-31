@@ -47,6 +47,10 @@ module.exports = async function handler(req, res) {
       url.pathname = '/api/' + routedPath;
     }
 
+    if (url.pathname === '/api/webhook') url.pathname = '/webhook';
+    else if (url.pathname === '/api/auth/facebook/callback') url.pathname = '/auth/facebook/callback';
+    else if (url.pathname.startsWith('/api/media/')) url.pathname = url.pathname.slice(4);
+
     if (url.pathname.startsWith('/api/media/')) {
       let name;
       try {
@@ -70,15 +74,37 @@ module.exports = async function handler(req, res) {
       return res.end(image.body);
     }
 
-    lockToken = crypto.randomUUID();
-    if (!await store.acquire(lockToken)) {
+    const method = req.method || 'GET';
+    const readOnly = ['GET', 'HEAD'].includes(method) ||
+      (method === 'POST' && url.pathname === '/api/login');
+    const requiresLock = !readOnly || url.pathname === '/auth/facebook/callback' || url.pathname === '/api/cron';
+
+    async function acquireLock() {
+      if (lockToken) return true;
+      const token = crypto.randomUUID();
+      if (!await store.acquire(token)) return false;
+      lockToken = token;
+      return true;
+    }
+
+    if (requiresLock && !await acquireLock()) {
       res.statusCode = 503;
       res.setHeader('content-type', 'application/json; charset=utf-8');
       res.setHeader('retry-after', '2');
       return res.end(JSON.stringify({ error: 'The application is busy; retry shortly' }));
     }
 
-    const { state, revision } = await store.load();
+    let { state, revision } = await store.load();
+    if (readOnly && !state.seeded) {
+      if (!await acquireLock()) {
+        res.statusCode = 503;
+        res.setHeader('content-type', 'application/json; charset=utf-8');
+        res.setHeader('retry-after', '2');
+        return res.end(JSON.stringify({ error: 'The application is busy; retry shortly' }));
+      }
+      ({ state, revision } = await store.load());
+    }
+
     const before = JSON.parse(JSON.stringify(state));
     const app = createApp({
       env: process.env,
@@ -101,17 +127,12 @@ module.exports = async function handler(req, res) {
       return res.end('ok');
     }
 
-    if (url.pathname === '/api/webhook') url.pathname = '/webhook';
-    else if (url.pathname === '/api/auth/facebook/callback') url.pathname = '/auth/facebook/callback';
-    else if (url.pathname.startsWith('/api/media/')) url.pathname = url.pathname.slice(4);
-
     const headers = new Headers(req.headers);
     for (const name of ['connection', 'content-length', 'host', 'transfer-encoding']) headers.delete(name);
-    const method = req.method || 'GET';
     const body = ['GET', 'HEAD'].includes(method) ? undefined : await requestBody(req);
     const request = new Request(url, { method, headers, body: body && body.length ? body : undefined });
     const response = await app.fetch(request);
-    await store.save(before, app.db.d, revision, lockToken);
+    if (lockToken) await store.save(before, app.db.d, revision, lockToken);
     return await writeResponse(res, response);
   } catch (error) {
     return sendFailure(res, error);
