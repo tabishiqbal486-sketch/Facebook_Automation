@@ -27,13 +27,16 @@ const lines = s => String(s || '').split('\n').map(x => x.trim()).filter(Boolean
 const TABS = [['dashboard', 'Dashboard'], ['needs', 'Needs me'], ['chat', 'Chat'], ['monitor', 'Monitor'], ['autopilot', 'Auto-Pilot'], ['skills', 'Skills & Log'], ['newpost', 'New Post'], ['business', 'Business'], ['catalogue', 'Catalogue'], ['reviews', 'Reviews'], ['leads', 'Leads'], ['orders', 'Orders'], ['groups', 'Groups'], ['settings', 'Settings'], ['history', 'History']];
 const STAGES = [['new_enquiry', 'New enquiry'], ['interested', 'Interested'], ['price_quoted', 'Price quoted'], ['awaiting_response', 'Awaiting response'], ['follow_up_required', 'Follow-up required'], ['order_confirmed', 'Order confirmed'], ['won', 'Won'], ['lost', 'Lost']];
 let cache = { products: [], settings: null, openQ: 0 };
-async function refreshCache() { cache.products = await api('GET', '/api/products'); cache.settings = await api('GET', '/api/settings'); cache.openQ = (await api('GET', '/api/questions?status=open')).length; }
+async function refreshCache() {
+  const data = await api('GET', '/api/bootstrap');
+  cache = { products: data.products, settings: data.settings, openQ: data.open_questions };
+}
 function drawNav(cur) { const n = document.getElementById('nav'); n.replaceChildren(el('h1', null, 'Furniture Sales Assistant'), ...TABS.map(([k, l]) => el('a', { class: k === cur ? 'on' : '', onclick: () => { location.hash = k; } }, l, k === 'needs' && cache.openQ ? el('span', { class: 'badge r' }, cache.openQ) : null))); }
 function modeBanner() { const s = cache.settings; return el('div', { class: 'banner ' + (s.live ? 'live' : 'dry') }, s.live ? 'LIVE MODE: replies are sent to real customers on Facebook.' : 'DRY-RUN MODE: nothing is sent to customers. Replies are only recorded. Switch to Live in Auto-Pilot when you are ready.', s.autopilot !== 'on' ? '  Auto-Pilot is ' + s.autopilot + '.' : ''); }
 const VIEWS = {};
 // ---------------- Dashboard
 VIEWS.dashboard = async () => {
-  const d = await api('GET', '/api/dashboard'), st = await api('GET', '/api/status');
+  const [d, st] = await Promise.all([api('GET', '/api/dashboard'), api('GET', '/api/status')]);
   return el('div', null, el('h2', null, 'Dashboard'), el('p', { class: 'sub' }, 'What needs attention right now.'), modeBanner(),
     el('div', { class: 'grid g4' }, stat(d.open_questions, 'Questions for me', d.open_questions ? 'wn' : ''), stat(d.orders_to_review, 'New order requests'), stat(d.new_enquiries, 'New enquiries'), stat(d.messages_in_today, 'Messages today'), stat(d.comments_today, 'Comments today'), stat(d.replies_sent_today, 'Replies sent today'), stat(d.replies_dry_today, 'Recorded (not sent)'), stat(d.failed_jobs, 'Failed sends', d.failed_jobs ? 'er' : ''), stat(d.followups_manual, 'Follow-ups to send myself'), stat(d.customers, 'Customers'), stat(d.products, 'Products'), stat(d.orders.confirmed + d.orders.dispatched, 'Orders in progress')),
     !st.meta_ready ? el('div', { class: 'box' }, el('h3', null, 'Facebook is not connected yet'), el('p', { class: 'mu' }, 'The assistant works in test mode. To receive real comments and messages, follow SETUP-META.md and use Settings.')) : null,
@@ -197,6 +200,8 @@ function showLogin() { document.getElementById('app').hidden = true; document.ge
 let rid = 0;
 async function render() {
   const my = ++rid, cur = (location.hash || '#dashboard').slice(1), v = VIEWS[cur] || VIEWS.dashboard, m = document.getElementById('main');
+  drawNav(cur);
+  m.replaceChildren(el('div', { class: 'box', role: 'status' }, 'Loading ' + (TABS.find(([key]) => key === cur) || TABS[0])[1] + '…'));
   try { await refreshCache(); if (my !== rid) return; drawNav(cur); const node = await v(); if (my !== rid) return; m.replaceChildren(node); } catch (e) { if (my === rid && KEY()) m.replaceChildren(el('div', { class: 'box' }, el('h3', null, 'Something went wrong'), el('p', { class: 'er' }, e.message))); }
 }
 async function start() {

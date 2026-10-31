@@ -56,6 +56,13 @@ function createApp(o = {}) {
      meta_ready: meta.configured, last_event_at: ev ? ev.ts : null, jobs: { pending: cnt('pending'), done: cnt('done'), failed: cnt('failed'), cancelled: cnt('cancelled') }, failed: jobs.filter(j => j.status === 'failed').sort((a, b) => b.finished - a.finished).slice(0, 15).map(j => ({ id: j.id, type: j.type, error: j.error, text: (j.payload.text || j.payload.file || '').slice(0, 120), customer: (db.get('customers', j.customer_id) || {}).name, finished: j.finished, attempts: j.attempts })),
      caps: { replies_last_hour: jobs.filter(j => j.origin === 'auto' && j.status === 'done' && j.finished > now() - 3600e3).length, limit_hour: db.settings.caps.repliesPerHour, dms_today: jobs.filter(j => j.origin === 'auto' && j.status === 'done' && ['dm', 'private_reply'].includes(j.type) && j.finished > now() - 864e5).length, limit_day: db.settings.caps.dmsPerDay }, db: { version: db.d.version, bytes: db.file && fs.existsSync(db.file) ? fs.statSync(db.file).size : 0, last_backup: db.backups()[0] || null, recovered_from: db.recovered }, time: now() };
   });
+  R('GET', '/api/bootstrap', () => ({
+    products: db.list('products').filter(p => !p.archived).map(p => Object.assign({}, p, {
+      posts: db.filter('posts', x => x.product_ids.includes(p.id)).map(x => x.post_id)
+    })).sort((a, b) => a.name.localeCompare(b.name)),
+    settings: db.settings,
+    open_questions: db.filter('questions', q => q.status === 'open').length
+  }));
   
   // Updated Dashboard API with Page Filter Support
   R('GET', '/api/dashboard', r => {
