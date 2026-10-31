@@ -11,8 +11,25 @@ const defaults = () => ({
 });
 const merge = (d, s) => { for (const k of Object.keys(d)) { if (s[k] === undefined) s[k] = d[k]; else if (d[k] && typeof d[k] === 'object' && !Array.isArray(d[k]) && s[k] && typeof s[k] === 'object') merge(d[k], s[k]); } return s; };
 class DB {
-  constructor(dir) { this.dir = dir; fs.mkdirSync(path.join(dir, 'backups'), { recursive: true }); fs.mkdirSync(path.join(dir, 'images'), { recursive: true }); this.file = path.join(dir, 'db.json'); this.recovered = null; this.lastBackup = 0; this.load(); }
-  backups() { return fs.readdirSync(path.join(this.dir, 'backups')).filter(f => f.endsWith('.json')).sort().reverse(); }
+  constructor(dir, options = {}) {
+    this.dir = dir;
+    this.recovered = null;
+    this.lastBackup = 0;
+    if (options.initialData) {
+      this.file = null;
+      this.d = JSON.parse(JSON.stringify(options.initialData));
+      for (const c of COLS) if (!this.d[c] || typeof this.d[c] !== 'object') this.d[c] = {};
+      this.d.settings = merge(defaults(), this.d.settings || {});
+      this.d.version = VERSION;
+      if (!Array.isArray(this.d.__backups)) this.d.__backups = [];
+      return;
+    }
+    fs.mkdirSync(path.join(dir, 'backups'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'images'), { recursive: true });
+    this.file = path.join(dir, 'db.json');
+    this.load();
+  }
+  backups() { return this.file ? fs.readdirSync(path.join(this.dir, 'backups')).filter(f => f.endsWith('.json')).sort().reverse() : (this.d.__backups || []).map(x => x.name).reverse(); }
   load() {
     let d = null, existed = fs.existsSync(this.file);
     if (existed) { try { d = JSON.parse(fs.readFileSync(this.file, 'utf8')); } catch (e) { const b = this.backups(); if (!b.length) throw new Error('db.json is damaged and no backup exists'); d = JSON.parse(fs.readFileSync(path.join(this.dir, 'backups', b[0]), 'utf8')); this.recovered = b[0]; } }
@@ -23,8 +40,25 @@ class DB {
     d.settings = merge(defaults(), d.settings || {});
     d.version = VERSION; this.d = d; if (!existed || old || this.recovered) this.save();
   }
-  save() { const t = this.file + '.tmp'; fs.writeFileSync(t, JSON.stringify(this.d)); fs.renameSync(t, this.file); if (Date.now() - this.lastBackup > 3600e3) { this.backup('auto'); } }
-  backup(label) { try { const n = new Date().toISOString().replace(/[:.]/g, '-'), f = path.join(this.dir, 'backups', n + '-' + (label || 'manual') + '.json'); if (fs.existsSync(this.file)) fs.copyFileSync(this.file, f); this.lastBackup = Date.now(); const all = this.backups(); all.slice(30).forEach(x => fs.unlinkSync(path.join(this.dir, 'backups', x))); return path.basename(f); } catch (e) { return null; } }
+  save() {
+    if (!this.file) {
+      if (Date.now() - this.lastBackup > 3600e3) this.backup('auto');
+      return;
+    }
+    const t = this.file + '.tmp'; fs.writeFileSync(t, JSON.stringify(this.d)); fs.renameSync(t, this.file); if (Date.now() - this.lastBackup > 3600e3) { this.backup('auto'); }
+  }
+  backup(label) {
+    if (!this.file) {
+      const name = new Date().toISOString().replace(/[:.]/g, '-') + '-' + (label || 'manual') + '.json';
+      const snapshot = JSON.parse(JSON.stringify(this.d));
+      delete snapshot.__backups;
+      this.d.__backups.push({ name, data: snapshot });
+      this.d.__backups = this.d.__backups.slice(-30);
+      this.lastBackup = Date.now();
+      return name;
+    }
+    try { const n = new Date().toISOString().replace(/[:.]/g, '-'), f = path.join(this.dir, 'backups', n + '-' + (label || 'manual') + '.json'); if (fs.existsSync(this.file)) fs.copyFileSync(this.file, f); this.lastBackup = Date.now(); const all = this.backups(); all.slice(30).forEach(x => fs.unlinkSync(path.join(this.dir, 'backups', x))); return path.basename(f); } catch (e) { return null; }
+  }
   get(c, id) { return this.d[c][id] || null; }
   put(c, o) { this.d[c][o.id] = o; return o; }
   del(c, id) { delete this.d[c][id]; }

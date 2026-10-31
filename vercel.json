@@ -1,0 +1,7 @@
+{
+  "rewrites": [
+    { "source": "/media/:path*", "destination": "/api/media/:path*" },
+    { "source": "/webhook", "destination": "/api/webhook" },
+    { "source": "/auth/facebook/callback", "destination": "/api/auth/facebook/callback" }
+  ]
+}

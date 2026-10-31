@@ -3,8 +3,13 @@ const KEY = () => sessionStorage.getItem('fsa-key') || '';
 const el = (t, a, ...c) => { const e = document.createElement(t); let val; for (const [k, v] of Object.entries(a || {})) { if (k === 'class') e.className = v; else if (k.startsWith('on')) e.addEventListener(k.slice(2), v); else if (k === 'value') val = v; else if (v !== false && v != null) e.setAttribute(k, v === true ? '' : v); } c.flat(9).forEach(x => { if (x == null || x === false) return; e.append(x.nodeType ? x : document.createTextNode(String(x))); }); if (val !== undefined) e.value = val; return e; };
 async function api(method, path, body) {
   const r = await fetch(path, { method, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + KEY() }, body: body ? JSON.stringify(body) : undefined });
-  let j = null; try { j = await r.json(); } catch (e) { /* empty */ } if (r.status === 401) { sessionStorage.removeItem('fsa-key'); showLogin(); throw new Error('Please sign in again'); }
-  if (!r.ok) { const e = new Error((j && j.error) || 'Request failed'); e.data = j; throw e; } return j;
+  let j = null; try { j = await r.json(); } catch (e) { /* empty */ }
+  if (r.status === 401) { sessionStorage.removeItem('fsa-key'); showLogin(); const e = new Error('Wrong key'); e.status = r.status; throw e; }
+  if (!r.ok) {
+    const message = (j && j.error) || (r.status === 404 ? 'Backend API route not found. The server may not be deployed.' : 'Request failed (HTTP ' + r.status + ')');
+    const e = new Error(message); e.status = r.status; e.data = j; throw e;
+  }
+  return j;
 }
 const gbp = p => (p == null ? '-' : '£' + (p % 100 ? (p / 100).toFixed(2) : p / 100));
 const fmt = t => t ? new Date(t).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' }) : '-';
@@ -198,7 +203,7 @@ async function start() {
   if (!KEY()) return showLogin();
   try { await api('GET', '/api/status'); document.getElementById('login').hidden = true; document.getElementById('app').hidden = false; render(); } catch (e) { showLogin(); }
 }
-document.getElementById('go').addEventListener('click', async () => { sessionStorage.setItem('fsa-key', document.getElementById('key').value.trim()); document.getElementById('lerr').textContent = ''; try { await api('GET', '/api/status'); start(); } catch (e) { document.getElementById('lerr').textContent = 'Wrong key'; } });
+document.getElementById('go').addEventListener('click', async () => { sessionStorage.setItem('fsa-key', document.getElementById('key').value.trim()); document.getElementById('lerr').textContent = ''; try { await api('GET', '/api/status'); start(); } catch (e) { document.getElementById('lerr').textContent = e.message; } });
 document.getElementById('key').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('go').click(); });
 window.addEventListener('hashchange', render); setInterval(() => { if (!document.hidden && KEY() && ['needs', 'monitor', 'dashboard'].includes((location.hash || '#dashboard').slice(1)) && !(document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName))) render(); }, 15000);
 start();

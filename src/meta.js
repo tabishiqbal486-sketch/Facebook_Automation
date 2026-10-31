@@ -5,7 +5,7 @@ const { redact, safeEq } = require('./util');
 const fail = (code, message, retryable) => ({ ok: false, code, retryable, message: redact(message) });
 
 class Meta {
-    constructor(o) { this.base = (o.base || 'https://graph.facebook.com'); this.ver = (o.ver || 'v18.0'); this.appId = o.appId; this.secret = o.secret; }
+    constructor(o) { this.base = (o.base || 'https://graph.facebook.com'); this.ver = (o.version || o.ver || 'v18.0'); this.appId = o.appId; this.secret = o.appSecret || o.secret; }
     get configured() { return !!(this.ver && this.appId && this.secret); }
 
     async call(method, p, { token, params = {}, body = {} } = {}) {
@@ -19,7 +19,15 @@ class Meta {
         let j = null; try { j = await res.json(); } catch (e) { /* not json */ }
         if (res.ok && j && !j.error) return { ok: true, data: j };
         const er = (j && j.error) || {}, code = er.code || res.status;
-        return { ok: false, code, subcode: er.error_subcode, message: redact(er.message || `HTTP ${res.status}`), retryable: [4, 17, 32, 341, 613, 614].includes(code) || res.status >= 500 };
+        return {
+            ok: false,
+            code,
+            subcode: er.error_subcode,
+            message: redact(er.message || `HTTP ${res.status}`),
+            retryable: [4, 17, 32, 341, 613, 614].includes(code) || res.status >= 500,
+            tokenExpired: code === 190,
+            permission: code === 10 || code === 200
+        };
     }
 
     replyToComment(token, commentId, text) { return this.call('POST', '/' + commentId + '/comments', { token, body: { message: text } }); }
@@ -54,6 +62,20 @@ class Meta {
         return { ok: true, data: { access_token: l.data.access_token, accounts: me.data.data } };
     }
 
+    privateReply(token, pageId, commentId, text) {
+        return this.call('POST', '/' + pageId + '/messages', {
+            token,
+            body: { recipient: { comment_id: commentId }, message: { text } }
+        });
+    }
+
+    subscribePage(token, pageId) {
+        return this.call('POST', '/' + pageId + '/subscribed_apps', {
+            token,
+            body: { subscribed_fields: ['feed', 'messages'] }
+        });
+    }
+
     verifySignature(raw, header) {
         if (!this.secret || !header) return false;
         const [algo, sig] = header.split('=');
@@ -63,4 +85,38 @@ class Meta {
     }
 }
 
-module.exports = Meta;
+function parseWebhook(payload) {
+    const events = [];
+    for (const entry of payload && Array.isArray(payload.entry) ? payload.entry : []) {
+        for (const change of entry.changes || []) {
+            const value = change.value || {};
+            if (change.field !== 'feed' || value.item !== 'comment' || value.verb !== 'add' || !value.comment_id) continue;
+            events.push({
+                id: 'comment:' + value.comment_id,
+                type: 'comment',
+                page_id: String(entry.id || ''),
+                post_id: value.post_id || null,
+                comment_id: String(value.comment_id),
+                from_id: value.from && value.from.id ? String(value.from.id) : null,
+                from_name: value.from && value.from.name ? value.from.name : '',
+                text: String(value.message || ''),
+                ts: value.created_time ? Number(value.created_time) * 1000 : Date.now()
+            });
+        }
+        for (const item of entry.messaging || []) {
+            if (!item || !item.message || item.message.is_echo || !item.message.mid) continue;
+            events.push({
+                id: 'message:' + item.message.mid,
+                type: 'message',
+                page_id: String(entry.id || ''),
+                from_id: item.sender && item.sender.id ? String(item.sender.id) : null,
+                from_name: '',
+                text: String(item.message.text || ''),
+                ts: Number(item.timestamp) || Date.now()
+            });
+        }
+    }
+    return events;
+}
+
+module.exports = { Meta, parseWebhook };

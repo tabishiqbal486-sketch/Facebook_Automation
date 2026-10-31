@@ -31,11 +31,13 @@ function productFrom(b, old) {
   if (b.archived !== undefined) p.archived = !!b.archived; p.updated = now(); return p;
 }
 function createApp(o = {}) {
-  const env = o.env || process.env, dataDir = o.dataDir || path.join(process.cwd(), 'data'); fs.mkdirSync(dataDir, { recursive: true });
-  const adminKey = env.ADMIN_KEY || secretFile(dataDir, 'admin.key', () => crypto.randomBytes(18).toString('base64url')), adminFrom = env.ADMIN_KEY ? '.env' : 'data/admin.key';
-  const secret = env.SECRET_KEY || secretFile(dataDir, 'secret.key', () => crypto.randomBytes(32).toString('hex'));
+  const env = o.env || process.env, dataDir = o.dataDir || path.join(process.cwd(), 'data'), memoryMode = Object.prototype.hasOwnProperty.call(o, 'initialData');
+  if (!memoryMode) fs.mkdirSync(dataDir, { recursive: true });
+  const adminKey = env.ADMIN_KEY || (memoryMode ? '' : secretFile(dataDir, 'admin.key', () => crypto.randomBytes(18).toString('base64url'))), adminFrom = env.ADMIN_KEY ? 'environment' : 'data/admin.key';
+  const secret = env.SECRET_KEY || (memoryMode ? '' : secretFile(dataDir, 'secret.key', () => crypto.randomBytes(32).toString('hex')));
   if (adminKey.length < 12) throw new Error('ADMIN_KEY must be at least 12 characters');
-  const db = new DB(dataDir); seed(db);
+  if (!secret) throw new Error('SECRET_KEY is required when using an external persistent database');
+  const db = o.db || new DB(dataDir, memoryMode ? { initialData: o.initialData } : {}); seed(db);
   const meta = new Meta({ base: env.GRAPH_BASE, version: env.GRAPH_VERSION, appId: env.APP_ID, appSecret: env.APP_SECRET });
   const engine = new Engine(db, meta, { secret, baseUrl: env.BASE_URL, fast: !!o.fast });
   const pub = o.publicDir || path.join(__dirname, '..', 'public'), states = new Map(), fails = new Map(), routes = [];
@@ -43,12 +45,16 @@ function createApp(o = {}) {
   const ids = (c) => (r) => db.get(c, r.params.id);
   // ---------- status / dashboard ----------
   const pageView = p => ({ id: p.id, name: p.name, token_status: p.token_status, connected_at: p.connected_at });
-  R('POST', '/api/login', (r) => ({ ok: true, key_source: adminFrom }));
+  R('POST', '/api/login', r => {
+    const supplied = r.body.key || (r.headers.authorization || '').replace(/^Bearer\s+/i, '');
+    if (!safeEq(supplied, adminKey)) throw bad('Wrong key', 401);
+    return { ok: true, key_source: adminFrom };
+  }, true);
   R('GET', '/api/status', () => {
     const jobs = db.list('jobs'), cnt = s => jobs.filter(j => j.status === s).length, ev = db.list('events').sort((a, b) => b.ts - a.ts)[0];
     return { live: db.settings.live, autopilot: db.settings.autopilot, pages: db.list('pages').map(pageView), config: { graph_version: !!env.GRAPH_VERSION, app_id: !!env.APP_ID, app_secret: !!env.APP_SECRET, base_url: !!env.BASE_URL, verify_token: !!env.VERIFY_TOKEN, admin_key_source: adminFrom },
      meta_ready: meta.configured, last_event_at: ev ? ev.ts : null, jobs: { pending: cnt('pending'), done: cnt('done'), failed: cnt('failed'), cancelled: cnt('cancelled') }, failed: jobs.filter(j => j.status === 'failed').sort((a, b) => b.finished - a.finished).slice(0, 15).map(j => ({ id: j.id, type: j.type, error: j.error, text: (j.payload.text || j.payload.file || '').slice(0, 120), customer: (db.get('customers', j.customer_id) || {}).name, finished: j.finished, attempts: j.attempts })),
-     caps: { replies_last_hour: jobs.filter(j => j.origin === 'auto' && j.status === 'done' && j.finished > now() - 3600e3).length, limit_hour: db.settings.caps.repliesPerHour, dms_today: jobs.filter(j => j.origin === 'auto' && j.status === 'done' && ['dm', 'private_reply'].includes(j.type) && j.finished > now() - 864e5).length, limit_day: db.settings.caps.dmsPerDay }, db: { version: db.d.version, bytes: fs.existsSync(db.file) ? fs.statSync(db.file).size : 0, last_backup: db.backups()[0] || null, recovered_from: db.recovered }, time: now() };
+     caps: { replies_last_hour: jobs.filter(j => j.origin === 'auto' && j.status === 'done' && j.finished > now() - 3600e3).length, limit_hour: db.settings.caps.repliesPerHour, dms_today: jobs.filter(j => j.origin === 'auto' && j.status === 'done' && ['dm', 'private_reply'].includes(j.type) && j.finished > now() - 864e5).length, limit_day: db.settings.caps.dmsPerDay }, db: { version: db.d.version, bytes: db.file && fs.existsSync(db.file) ? fs.statSync(db.file).size : 0, last_backup: db.backups()[0] || null, recovered_from: db.recovered }, time: now() };
   });
   
   // Updated Dashboard API with Page Filter Support
@@ -82,13 +88,16 @@ function createApp(o = {}) {
   R('POST', '/api/products', r => { const p = productFrom(r.body); if (db.find('products', x => x.sku === p.sku && !x.archived)) throw bad('SKU ' + p.sku + ' already exists'); db.put('products', p); db.log('catalogue', 'Added ' + p.name, p.id); db.save(); return p; });
   R('PUT', '/api/products/:id', r => { const old = ids('products')(r); if (!old) throw bad('Not found', 404); const p = productFrom(r.body, old); if (db.find('products', x => x.sku === p.sku && x.id !== p.id && !x.archived)) throw bad('SKU ' + p.sku + ' already exists'); db.put('products', p); db.log('catalogue', 'Updated ' + p.name + (old.price_pence !== p.price_pence ? ' (price ' + gbp(old.price_pence) + ' to ' + gbp(p.price_pence) + ')' : ''), p.id); db.save(); return p; });
   R('POST', '/api/products/:id/archive', r => { const p = ids('products')(r); if (!p) throw bad('Not found', 404); p.archived = r.body.archived !== false; p.updated = now(); db.log('catalogue', (p.archived ? 'Archived ' : 'Restored ') + p.name, p.id); db.save(); return p; });
-  R('POST', '/api/products/:id/images', r => {
+  R('POST', '/api/products/:id/images', async r => {
     const p = ids('products')(r); if (!p) throw bad('Not found', 404); if (p.images.length >= 10) throw bad('A product can have up to 10 photos');
     const m = String(r.body.data || '').match(/^data:image\/(jpeg|png|webp);base64,([A-Za-z0-9+/=]+)$/); if (!m) throw bad('Send a JPEG, PNG or WebP image'); const buf = Buffer.from(m[2], 'base64'); if (buf.length > 5e6) throw bad('Photo is too large (max 5 MB)');
     const ok = (m[1] === 'jpeg' && buf[0] === 0xff && buf[1] === 0xd8) || (m[1] === 'png' && buf[0] === 0x89 && buf[1] === 0x50) || (m[1] === 'webp' && buf.subarray(8, 12).toString() === 'WEBP'); if (!ok) throw bad('That file is not a real ' + m[1].toUpperCase() + ' image');
-    const f = crypto.randomBytes(12).toString('hex') + '.' + (m[1] === 'jpeg' ? 'jpg' : m[1]); fs.writeFileSync(path.join(dataDir, 'images', f), buf); p.images.push(f); p.updated = now(); db.save(); return p;
+    const f = crypto.randomBytes(12).toString('hex') + '.' + (m[1] === 'jpeg' ? 'jpg' : m[1]);
+    if (o.imageStore) await o.imageStore.put(f, buf, MIME['.' + (m[1] === 'jpeg' ? 'jpg' : m[1])]);
+    else fs.writeFileSync(path.join(dataDir, 'images', f), buf);
+    p.images.push(f); p.updated = now(); db.save(); return p;
   });
-  R('DELETE', '/api/products/:id/images/:file', r => { const p = ids('products')(r); if (!p) throw bad('Not found', 404); const f = path.basename(r.params.file); if (!p.images.includes(f)) throw bad('Photo not found', 404); p.images = p.images.filter(x => x !== f); try { fs.unlinkSync(path.join(dataDir, 'images', f)); } catch (e) { /* already gone */ } db.save(); return p; });
+  R('DELETE', '/api/products/:id/images/:file', async r => { const p = ids('products')(r); if (!p) throw bad('Not found', 404); const f = path.basename(r.params.file); if (!p.images.includes(f)) throw bad('Photo not found', 404); p.images = p.images.filter(x => x !== f); if (o.imageStore) await o.imageStore.delete(f); else { try { fs.unlinkSync(path.join(dataDir, 'images', f)); } catch (e) { /* already gone */ } } db.save(); return p; });
   R('POST', '/api/products/:id/cover', r => { const p = ids('products')(r); const f = path.basename(String(r.body.file || '')); if (!p || !p.images.includes(f)) throw bad('Photo not found', 404); p.images = [f].concat(p.images.filter(x => x !== f)); db.save(); return p; });
   // ---------- post to product mapping ----------
   R('GET', '/api/posts', () => db.list('posts').map(x => Object.assign({}, x, { products: x.product_ids.map(id => (db.get('products', id) || {}).name) })).sort((a, b) => b.created - a.created));
@@ -182,10 +191,168 @@ function createApp(o = {}) {
   R('POST', '/api/import/legacy', r => {
     let o = r.body.json; if (typeof o === 'string') { try { o = JSON.parse(o); } catch (e) { throw bad('That is not valid JSON'); } } if (!o || !Array.isArray(o.prods)) throw bad('This does not look like a Page Desk backup'); db.backup('before-import'); let np = 0, nl = 0, no = 0, skipped = [];
     for (const p of o.prods) { if (!p.n) continue; if (/generator|pressure|washer|tool/i.test(p.n + ' ' + (p.cat || ''))) { skipped.push(p.n); continue; } if (db.find('products', x => x.name.toLowerCase() === String(p.n).toLowerCase())) continue; db.put('products', productFrom({ name: p.n, category: p.cat || '', price: p.price, lowest_price: p.floor, description: p.det || '', colours: p.col || '', keywords: p.kw || '', addons: p.add ? [{ name: p.add, price: p.addp || 0 }] : [] })); np++; }
-    const cust = n => engine.upsertCustomer('legacy', String(n || 'unknown'));
-    // Continuing rest of file if any...
+    const cust = (name, phone, postcode, address) => {
+      let c = db.find('customers', x => x.platform === 'legacy' && x.name === String(name || 'unknown'));
+      if (!c) c = engine.upsertCustomer('legacy', String(name || 'unknown'));
+      if (name && !c.name) c.name = String(name);
+      if (phone) c.phone = String(phone);
+      if (postcode) c.address.postcode = normPostcode(postcode) || '';
+      if (address) c.address.line1 = String(address);
+      return c;
+    };
+    for (const lead of Array.isArray(o.leads) ? o.leads : []) {
+      const c = cust(lead.n, lead.ph);
+      db.put('leads', { id: uid('lead'), customer_id: c.id, product_id: null, stage: 'new_enquiry', quoted_pence: null, follow_up_at: null, notes: String(lead.s || ''), source: 'legacy-import', created: now(), updated: now(), offered: false });
+      nl++;
+    }
+    for (const order of Array.isArray(o.orders) ? o.orders : []) {
+      const c = cust(order.n, order.ph, order.pc, order.a);
+      const product = db.find('products', p => p.name.toLowerCase() === String(order.item || '').toLowerCase());
+      const amount = toPence(order.price);
+      db.put('orders', { id: uid('ord'), customer_id: c.id, lead_id: null, quote_id: null, lines: product ? [{ product_id: product.id, name: product.name, qty: 1, unit_pence: amount, addons: [], line_total_pence: amount }] : [], total_pence: Number.isNaN(amount) || amount == null ? 0 : amount, payment_status: 'unpaid', order_status: 'new', delivery_status: 'not_dispatched', address: Object.assign({}, c.address), source: 'legacy-import', needs_review: true, created: now(), history: [{ ts: now(), text: 'Imported for owner review; verify order and payment status' }] });
+      no++;
+    }
+    db.log('import', 'Imported ' + np + ' products, ' + nl + ' leads and ' + no + ' orders from legacy backup');
+    db.save();
+    return { products: np, leads: nl, orders: no, skipped };
   });
-  return { server, engine, db, meta, adminKey, adminFrom };
+
+  const fetchHandler = async request => {
+    const url = new URL(request.url), pathname = url.pathname, method = request.method;
+    const json = (status, value) => new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } });
+    try {
+      if (pathname === '/webhook' && method === 'GET') {
+        const q = url.searchParams;
+        if (q.get('hub.mode') === 'subscribe' && safeEq(q.get('hub.verify_token') || '', env.VERIFY_TOKEN || '')) return new Response(q.get('hub.challenge') || '', { status: 200, headers: { 'content-type': 'text/plain; charset=utf-8' } });
+        return new Response('Forbidden', { status: 403, headers: { 'content-type': 'text/plain; charset=utf-8' } });
+      }
+
+      if (pathname === '/webhook' && method === 'POST') {
+        const raw = await request.text();
+        if (Buffer.byteLength(raw, 'utf8') > 1024 * 1024) throw bad('Webhook payload is too large', 413);
+        if (!meta.verifySignature(raw, request.headers.get('x-hub-signature-256'))) return new Response('Invalid signature', { status: 403 });
+        let payload;
+        try { payload = JSON.parse(raw); } catch (e) { throw bad('Invalid webhook JSON'); }
+        for (const event of parseWebhook(payload)) engine.process(event);
+        db.save();
+        return json(200, { ok: true });
+      }
+
+      if (pathname === '/auth/facebook/callback' && method === 'GET') {
+        const state = url.searchParams.get('state') || '', code = url.searchParams.get('code') || '', parts = state.split('.');
+        const signed = parts.slice(0, 2).join('.'), expected = crypto.createHmac('sha256', secret).update(signed).digest('hex'), issued = Number(parts[0]);
+        if (parts.length !== 3 || !safeEq(parts[2], expected) || !Number.isFinite(issued) || now() - issued > 10 * 60e3 || issued > now() + 60e3) throw bad('Facebook login state is invalid or expired', 400);
+        if (!code) throw bad('Facebook did not return an authorization code', 400);
+        const redirect = (env.BASE_URL || url.origin).replace(/\/$/, '') + '/auth/facebook/callback';
+        const connected = await meta.connectPages(code, redirect);
+        if (!connected.ok) throw bad('Facebook connection failed: ' + connected.message, 502);
+        for (const page of connected.data.accounts || []) {
+          if (!page.id || !page.access_token) continue;
+          const sub = await meta.subscribePage(page.access_token, String(page.id));
+          if (!sub.ok) throw bad('Could not subscribe Facebook Page ' + (page.name || page.id) + ': ' + sub.message, 502);
+          db.put('pages', { id: String(page.id), name: page.name || String(page.id), token_enc: U.encrypt(page.access_token, secret), token_status: 'ok', connected_at: now() });
+        }
+        db.log('facebook', 'Connected ' + (connected.data.accounts || []).length + ' Facebook Page(s)');
+        db.save();
+        return new Response(null, { status: 302, headers: { location: '/' } });
+      }
+
+      if (pathname === '/api/facebook/login-url' && method === 'GET') {
+        const supplied = (request.headers.get('authorization') || '').replace(/^Bearer\s+/i, '');
+        if (!safeEq(supplied, adminKey)) return json(401, { error: 'Wrong key' });
+        const issued = String(now()), nonce = crypto.randomBytes(24).toString('base64url'), signed = issued + '.' + nonce;
+        const state = signed + '.' + crypto.createHmac('sha256', secret).update(signed).digest('hex');
+        const redirect = (env.BASE_URL || url.origin).replace(/\/$/, '') + '/auth/facebook/callback';
+        return json(200, { url: meta.loginUrl(redirect, state, env.CONFIG_ID) });
+      }
+
+      if (pathname.startsWith('/api/')) {
+        const route = routes.find(x => x.m === method && x.re.test(pathname));
+        if (!route) return json(404, { error: 'Not found' });
+        if (!route.open) {
+          const supplied = (request.headers.get('authorization') || '').replace(/^Bearer\s+/i, '');
+          if (!safeEq(supplied, adminKey)) return json(401, { error: 'Wrong key' });
+        }
+        const match = route.re.exec(pathname), params = {};
+        for (const key of Object.keys(match.groups || {})) {
+          try { params[key] = decodeURIComponent(match.groups[key]); } catch (e) { throw bad('Invalid URL parameter'); }
+        }
+        const raw = method === 'GET' || method === 'HEAD' ? '' : await request.text();
+        if (Buffer.byteLength(raw, 'utf8') > 8 * 1024 * 1024) throw bad('Request body is too large', 413);
+        let body = {};
+        if (raw) {
+          try { body = JSON.parse(raw); } catch (e) { throw bad('Invalid JSON body'); }
+          if (!body || typeof body !== 'object' || Array.isArray(body)) throw bad('JSON body must be an object');
+        }
+        const result = await route.h({ body, params, query: Object.fromEntries(url.searchParams), headers: request.headers });
+        return json(200, result === undefined ? null : result);
+      }
+
+      if (pathname.startsWith('/media/')) {
+        const name = pathname.slice('/media/'.length);
+        if (!name || path.basename(name) !== name || name.includes('\\')) return new Response(null, { status: 404 });
+        if (o.imageStore) {
+          const image = await o.imageStore.get(name);
+          if (!image) return new Response(null, { status: 404 });
+          return new Response(image.body, { status: 200, headers: { 'content-type': image.contentType || MIME[path.extname(name).toLowerCase()] || 'application/octet-stream', 'cache-control': 'public, max-age=3600' } });
+        }
+        const file = path.join(dataDir, 'images', name);
+        if (!fs.existsSync(file) || !fs.statSync(file).isFile()) return new Response(null, { status: 404 });
+        return new Response(fs.readFileSync(file), { status: 200, headers: { 'content-type': MIME[path.extname(name).toLowerCase()] || 'application/octet-stream', 'cache-control': 'public, max-age=3600' } });
+      }
+
+      if (method !== 'GET' && method !== 'HEAD') return new Response(null, { status: 404 });
+      if (o.assets) return o.assets.fetch(request);
+      const relative = pathname === '/' ? 'index.html' : decodeURIComponent(pathname.slice(1)), file = path.resolve(pub, relative);
+      if (file !== pub && !file.startsWith(path.resolve(pub) + path.sep)) return new Response(null, { status: 404 });
+      if (!fs.existsSync(file) || !fs.statSync(file).isFile()) return new Response(null, { status: 404 });
+      return new Response(method === 'HEAD' ? null : fs.readFileSync(file), { status: 200, headers: { 'content-type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream', 'cache-control': 'no-cache' } });
+    } catch (e) {
+      const status = Number(e.status) || 500;
+      if (status >= 500) console.error('Request failed:', U.redact(e.message));
+      return json(status, Object.assign({ error: U.redact(e.message || 'Internal server error') }, e.extra || {}));
+    }
+  };
+  const server = o.webWorker ? null : http.createServer(async (req, res) => {
+    try {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const body = Buffer.concat(chunks);
+      const request = new Request('http://' + (req.headers.host || 'localhost') + req.url, {
+        method: req.method,
+        headers: req.headers,
+        body: ['GET', 'HEAD'].includes(req.method) || !body.length ? undefined : body
+      });
+      const response = await fetchHandler(request);
+      res.writeHead(response.status, Object.fromEntries(response.headers));
+      res.end(Buffer.from(await response.arrayBuffer()));
+    } catch (e) {
+      if (!res.headersSent) res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: U.redact(e.message || 'Internal server error') }));
+    }
+  });
+  let timer = null;
+  if (!o.noTimer && !o.webWorker) {
+    timer = setInterval(() => engine.tick().catch(e => console.error('Job processing failed:', U.redact(e.message))), 1000);
+    if (timer.unref) timer.unref();
+  }
+  return {
+    server, engine, db, meta, adminKey, adminFrom, fetch: fetchHandler,
+    start: port => new Promise((resolve, reject) => {
+      if (!server) return reject(new Error('The HTTP listener is disabled in Worker mode'));
+      const onError = e => { server.removeListener('listening', onListening); reject(e); };
+      const onListening = () => { server.removeListener('error', onError); resolve(server.address().port); };
+      server.once('error', onError);
+      server.once('listening', onListening);
+      server.listen(port, '127.0.0.1');
+    }),
+    stop: () => new Promise((resolve, reject) => {
+      if (timer) clearInterval(timer);
+      if (!server) return resolve();
+      if (!server.listening) return resolve();
+      server.close(e => e ? reject(e) : resolve());
+    })
+  };
 }
 if (require.main === module) {
   try { const f = path.join(process.pkg ? path.dirname(process.execPath) : process.cwd(), '.env'); if (fs.existsSync(f)) require('dotenv').config({ path: f }); } catch (e) {}

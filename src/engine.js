@@ -153,7 +153,7 @@ class Engine {
       if (!c || !l) { skip('missing record'); continue; } if (c.opt_out) { skip('customer opted out'); continue; } if (['won', 'lost', 'order_confirmed'].includes(l.stage)) { skip('lead is ' + l.stage); continue; }
       if (db.find('orders', o => o.customer_id === c.id && o.lead_id === l.id && o.order_status !== 'cancelled')) { skip('order exists'); continue; }
       const lastIn = db.filter('messages', m => m.customer_id === c.id && m.direction === 'in').sort((a, b) => b.ts - a.ts)[0];
-      if (lastIn && lastIn.ts > f.created) { skip('customer replied'); continue; }
+      if (lastIn && lastIn.ts > f.created + 1000) { skip('customer replied'); continue; }
       const text = (this.s.followups.text || 'Hi {name}, just checking if you have any questions about the {product}. We are happy to help.').replace(/\{name\}/g, firstName(c.name) || 'there').replace(/\{product\}/g, p ? p.name : 'furniture');
       f.text = text;
       if (lastIn && now() - lastIn.ts <= 24 * 3600e3 && this.s.autopilot === 'on') { f.status = 'sent'; this.addJob({ type: 'dm', key: 'fu:' + f.id, due_at: now() + 1000, origin: 'auto', customer_id: c.id, page_id: lastIn.page_id, payload: { text } }); l.stage = 'awaiting_response'; const jb = db.find('jobs', x => x.key === 'fu:' + f.id); const m = db.put('messages', { id: uid('msg'), customer_id: c.id, direction: 'out', channel: 'inbox', text, ts: now(), status: 'queued', job_id: jb.id, followup: true }); jb.message_id = m.id; }
