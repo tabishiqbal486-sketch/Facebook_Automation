@@ -41,6 +41,12 @@ module.exports = async function handler(req, res) {
   try {
     store = createSupabaseStore(process.env);
     const url = new URL(req.url, 'https://' + (req.headers.host || 'localhost'));
+    const routedPath = url.searchParams.get('__path');
+    if (routedPath !== null) {
+      url.searchParams.delete('__path');
+      url.pathname = '/api/' + routedPath;
+    }
+
     if (url.pathname.startsWith('/api/media/')) {
       let name;
       try {
