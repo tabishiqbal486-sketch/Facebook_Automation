@@ -54,7 +54,7 @@ module.exports = async function handler(req, res) {
     if (url.pathname.startsWith('/media/')) {
       let name;
       try {
-        name = decodeURIComponent(url.pathname.slice('/api/media/'.length));
+        name = decodeURIComponent(url.pathname.slice('/media/'.length));
       } catch {
         res.statusCode = 404;
         return res.end();
