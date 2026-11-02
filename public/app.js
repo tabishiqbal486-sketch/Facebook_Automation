@@ -37,7 +37,7 @@ const VIEWS = {};
 // ---------------- Dashboard
 VIEWS.dashboard = async () => {
   const [d, st] = await Promise.all([api('GET', '/api/dashboard'), api('GET', '/api/status')]);
-  return el('div', null, el('h2', null, 'Dashboard'), el('p', { class: 'sub' }, 'What needs attention right now.'), modeBanner(),
+  return el('div', null, el('div', { class: 'welcome-header', style: 'font-size:18px;font-weight:700;margin-bottom:8px;color:var(--ac)' }, 'Welcome, ' + (localStorage.getItem('username') || 'Username')), el('h2', null, 'Dashboard'), el('p', { class: 'sub' }, 'What needs attention right now.'), modeBanner(),
     el('div', { class: 'grid g4' }, stat(d.open_questions, 'Questions for me', d.open_questions ? 'wn' : ''), stat(d.orders_to_review, 'New order requests'), stat(d.new_enquiries, 'New enquiries'), stat(d.messages_in_today, 'Messages today'), stat(d.comments_today, 'Comments today'), stat(d.replies_sent_today, 'Replies sent today'), stat(d.replies_dry_today, 'Recorded (not sent)'), stat(d.failed_jobs, 'Failed sends', d.failed_jobs ? 'er' : ''), stat(d.followups_manual, 'Follow-ups to send myself'), stat(d.customers, 'Customers'), stat(d.products, 'Products'), stat(d.orders.confirmed + d.orders.dispatched, 'Orders in progress')),
     !st.meta_ready ? el('div', { class: 'box' }, el('h3', null, 'Facebook is not connected yet'), el('p', { class: 'mu' }, 'The assistant works in test mode. To receive real comments and messages, follow SETUP-META.md and use Settings.')) : null,
     el('div', { class: 'box' }, el('h3', null, 'Recent activity'), el('table', null, d.recent.map(l => el('tr', null, el('td', { class: 'mu' }, fmt(l.ts)), el('td', null, badge(l.kind)), el('td', null, l.text))))));
