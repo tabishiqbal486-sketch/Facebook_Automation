@@ -123,11 +123,13 @@ function createApp(o = {}) {
   R('POST', '/api/posts', r => { const pid = String(r.body.post_id || '').trim(); if (!pid) throw bad('Facebook post ID is required'); const pr = list(r.body.product_ids); if (!pr.length || pr.some(i => !db.get('products', i))) throw bad('Choose existing products'); const ex = db.find('posts', x => x.post_id === pid); const rec = ex || { id: uid('post'), post_id: pid, page_id: r.body.page_id || null, caption: '', created: now() }; Object.assign(rec, { product_ids: pr, verified: true, source: 'owner' }); db.put('posts', rec); db.log('catalogue', 'Mapped post ' + pid + ' to ' + pr.length + ' product(s)', rec.id); db.save(); return rec; });
   R('DELETE', '/api/posts/:id', r => { db.del('posts', r.params.id); db.save(); return { ok: true }; });
   R('POST', '/api/posts/draft', r => { const p = db.get('products', r.body.product_id); if (!p) throw bad('Choose a product'); const b = db.settings.business, parts = [p.name + (p.price_pence != null ? ' - ' + gbp(p.sale_price_pence != null ? p.sale_price_pence : p.price_pence) : '')]; if (p.description) parts.push(p.description); if (p.colours.length) parts.push('Available in: ' + p.colours.join(', ')); if (b.delivery_text) parts.push(b.delivery_text); if (b.payment_text) parts.push(b.payment_text); if (b.phone) parts.push('WhatsApp: ' + b.phone); return { caption: parts.join('\n\n'), images: p.images, warnings: [p.price_pence == null ? 'This product has no price' : null, !p.images.length ? 'This product has no photos' : null, !p.description ? 'No description in the catalogue' : null].filter(Boolean) }; });
-  R('POST', '/api/posts/publish', r => {
+  R('POST', '/api/posts/publish', async r => {
     if (!r.body.confirm) throw bad('Please preview and confirm before publishing');
     const pids = list(r.body.page_ids || r.body.page_id);
-    if (!pids.length) {
-      if (db.settings.live) throw bad('Choose a connected Page');
+    const grpIds = list(r.body.group_ids);
+    const groups = grpIds.map(id => db.get('groups', id)).filter(Boolean);
+    if (!pids.length && !groups.length) {
+      if (db.settings.live) throw bad('Choose at least one connected Page or Group');
       pids.push('dry');
     }
     const pages = pids.map(id => db.get('pages', id) || (db.settings.live ? null : { id: id || 'dry', name: 'Dry-run' }));
@@ -139,8 +141,13 @@ function createApp(o = {}) {
     const directFiles = list(r.body.images);
     const files = Array.from(new Set(directFiles.concat(prods.flatMap(p => p.images.slice(0, 10)))));
     if (!files.length && r.body.require_image) throw bad('Please upload or select at least one image');
-    const soon = now() + (engine.fast ? 20 : 1000), when = r.body.when ? Math.max(soon, +r.body.when) : soon;
+    
+    const isScheduled = !!r.body.when && +r.body.when > (now() + 5000);
+    const soon = now() + (engine.fast ? 20 : 1000);
+    const when = isScheduled ? +r.body.when : soon;
     const jobs = [];
+
+    // Publish to Pages
     for (const page of pages) {
       const j = engine.addJob({
         type: 'publish_post',
@@ -160,8 +167,59 @@ function createApp(o = {}) {
       db.log('post', (db.settings.live ? 'Post queued' : 'Post recorded in dry-run mode (not published)') + (pages.length > 1 ? ' (' + (page.name || page.id) + ')' : '') + ': ' + text.slice(0, 50), j.id);
       jobs.push(j);
     }
+
+    // Publish to Groups
+    const primaryPage = pages[0] || db.list('pages')[0] || { id: 'dry', name: 'Dry-run' };
+    for (const group of groups) {
+      const match = String(group.link || '').match(/groups\/([^/?#]+)/);
+      const targetId = group.group_id || (match ? match[1] : null) || group.id;
+      const j = engine.addJob({
+        type: 'publish_post',
+        key: null,
+        due_at: when,
+        origin: 'owner',
+        customer_id: 'none',
+        page_id: primaryPage.id,
+        payload: {
+          text,
+          title: r.body.title || '',
+          location: r.body.location || '',
+          target_id: targetId,
+          group_db_id: group.id,
+          group_name: group.name,
+          files: files.slice(0, 10),
+          product_ids: prods.map(p => p.id)
+        }
+      });
+      group.last_posted = now();
+      db.log('post', (db.settings.live ? 'Group post queued' : 'Group post recorded in dry-run mode') + ' for group ' + group.name + ': ' + text.slice(0, 50), j.id);
+      jobs.push(j);
+    }
+
+    // Immediate execution for non-scheduled posts (ensures posts publish instantly on Vercel and locally)
+    const results = [];
+    if (!isScheduled) {
+      for (const j of jobs) {
+        await engine.runJob(j);
+        results.push({
+          id: j.id,
+          page_id: j.page_id,
+          status: j.status,
+          result: j.result,
+          meta_id: j.meta_id || null,
+          error: j.error || null
+        });
+      }
+    }
+
     db.save();
-    return { job: jobs[0], jobs, live: db.settings.live };
+    return {
+      job: jobs[0],
+      jobs,
+      results,
+      executed_immediately: !isScheduled,
+      live: db.settings.live
+    };
   });
   // ---------- customers ----------
   const cview = c => Object.assign({}, c, { psid: undefined });

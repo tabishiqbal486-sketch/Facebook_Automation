@@ -126,6 +126,7 @@ VIEWS.skills = async () => {
 // ---------------- New Post
 VIEWS.newpost = async () => {
   const [st, gs] = await Promise.all([api('GET', '/api/status'), api('GET', '/api/groups')]);
+  const s = cache.settings;
   const b = (cache.settings && cache.settings.business) || {};
   const pr = sel([['', '(Optional: draft from catalogue)']].concat(cache.products.map(p => [p.id, p.name])), '');
   const title = inp('', { placeholder: 'e.g. Luxury Velvet Corner Sofa (Brand New)' });
@@ -159,7 +160,7 @@ VIEWS.newpost = async () => {
       el('div', { class: 'grid g2' },
         pageChecks.map(pc => el('label', { style: 'display:flex;gap:8px;align-items:center;cursor:pointer' }, pc.input, pc.name))
       )
-    ] : el('p', { class: 'mu' }, 'No Facebook Page connected yet. Post will run in dry-run mode.')
+    ] : el('p', { class: 'mu' }, 'No Facebook Page connected yet. Connect a Page in Settings to publish live.')
   );
   pageChecks.forEach(pc => pc.input.addEventListener('change', () => updatePreview()));
 
@@ -278,10 +279,26 @@ VIEWS.newpost = async () => {
   renderThumbs();
   updatePreview();
 
+  // Mode badge & switcher
+  const modeBar = el('div', { style: 'display:flex;justify-content:space-between;align-items:center;background:var(--sf);border:1px solid var(--ln);border-radius:10px;padding:10px 14px;margin-bottom:14px' },
+    el('div', null,
+      el('b', null, 'Current Mode: '),
+      s.live ? el('span', { class: 'badge r' }, '🔴 LIVE MODE (Posts to Real Facebook)') : el('span', { class: 'badge o' }, '🟡 DRY-RUN MODE (Test only - not published to FB)'),
+      el('div', { class: 'mu', style: 'font-size:12.5px;margin-top:2px' }, s.live ? 'Real posts are published immediately on your connected Facebook Pages.' : 'Posts are recorded for review. Switch to Live mode to publish on real Facebook.')
+    ),
+    btn(s.live ? 'Switch to Dry-Run' : 'Go Live on Facebook', async () => {
+      const next = !s.live;
+      if (next && !confirm('Switch to LIVE mode? This will publish posts and send replies to real Facebook.')) return;
+      await api('PUT', '/api/settings', { live: next, confirm_live: next });
+      await refreshCache();
+      render();
+    }, s.live ? 'sm alt' : 'sm bad')
+  );
+
   return el('div', null,
     el('h2', null, 'New Post'),
-    el('p', { class: 'sub' }, 'Create and schedule Facebook posts with multiple images across multiple pages and connected groups.'),
-    modeBanner(),
+    el('p', { class: 'sub' }, 'Create and publish Facebook posts with multiple images across multiple pages and connected groups.'),
+    modeBar,
     el('div', { class: 'box' },
       el('h3', null, '1. Post Details'),
       el('div', { class: 'grid g2' },
@@ -344,6 +361,8 @@ VIEWS.newpost = async () => {
           if (loc.value.trim()) fullCaption += '📍 Location: ' + loc.value.trim() + '\n\n';
           fullCaption += cap.value.trim();
 
+          toast('Publishing post...', false);
+
           const r = await api('POST', '/api/posts/publish', {
             page_ids: selectedPages.length ? selectedPages : (pagesList.length ? [pagesList[0].id] : undefined),
             group_ids: selectedGroups,
@@ -358,23 +377,50 @@ VIEWS.newpost = async () => {
             when: when.value ? new Date(when.value).getTime() : undefined
           });
 
-          const destSummary = [];
-          if (selectedPages.length) destSummary.push(selectedPages.length + ' page(s)');
-          if (selectedGroups.length) destSummary.push(selectedGroups.length + ' group(s)');
-          const summaryText = destSummary.join(' and ') || 'destinations';
+          postResultBox.style.display = 'block';
 
-          toast(r.live ? ('Post queued for ' + summaryText + '!') : ('Dry-run: recorded for ' + summaryText + ' (not sent to FB).'));
+          if (r.executed_immediately && r.results && r.results.length) {
+            const failed = r.results.filter(x => x.status === 'failed');
+            const sent = r.results.filter(x => x.result === 'sent');
+            const dry = r.results.filter(x => x.result === 'dry_run');
 
-          if (selectedGroups.length) {
-            const chosenGroups = groupsList.filter(g => selectedGroups.includes(g.id));
-            postResultBox.style.display = 'block';
-            postResultBox.replaceChildren(
-              el('h3', null, '✔ Post Queued for Groups (' + chosenGroups.length + ')'),
-              el('p', { class: 'mu' }, 'Posts have been queued and tracked in cooldown history. You can also view the groups below:'),
-              el('div', { class: 'row' },
-                ...chosenGroups.map(g => el('a', { href: g.link, target: '_blank', rel: 'noopener noreferrer', class: 'button sm alt', style: 'padding:6px 12px;text-decoration:none;display:inline-block;border:1px solid var(--ln);border-radius:6px;font-weight:600' }, 'Open ' + g.name + ' ↗'))
-              )
-            );
+            if (failed.length) {
+              postResultBox.replaceChildren(
+                el('h3', { style: 'color:var(--er)' }, '✖ Facebook Error: ' + failed[0].error),
+                el('p', { class: 'mu' }, 'Meta Graph API rejected the post: ' + failed[0].error),
+                el('p', { class: 'mu' }, 'Tip: Ensure you have reconnected your Facebook Pages in Settings after updating permissions, and that BASE_URL is set to a public https address.'),
+                el('div', { class: 'row' }, btn('Open Settings to Reconnect', () => { location.hash = 'settings'; }, 'sm alt'))
+              );
+              toast('Post failed: ' + failed[0].error, true);
+            } else if (sent.length) {
+              postResultBox.replaceChildren(
+                el('h3', { style: 'color:var(--ok)' }, '✔ Published Successfully to Facebook!'),
+                el('p', null, 'Your post is now live on Facebook.'),
+                el('div', { class: 'row' },
+                  ...sent.map(s => {
+                    const postUrl = 'https://facebook.com/' + (s.meta_id || '');
+                    return el('a', { href: postUrl, target: '_blank', rel: 'noopener noreferrer', class: 'button sm', style: 'padding:6px 12px;text-decoration:none;display:inline-block;background:var(--ok);color:#fff;border-radius:6px;font-weight:700' }, 'View Post on Facebook (' + (s.meta_id || 'link') + ') ↗');
+                  })
+                )
+              );
+              toast('Post is live on Facebook!');
+            } else if (dry.length) {
+              postResultBox.replaceChildren(
+                el('h3', { style: 'color:var(--wn)' }, '🟡 Recorded in Dry-Run Mode (Test only)'),
+                el('p', { class: 'mu' }, 'The post was saved and simulated, but nothing was sent to Facebook because the software is in Dry-Run mode.'),
+                el('p', null, 'To publish real posts to Facebook, click "Go Live on Facebook" above or in Auto-Pilot.'),
+                el('div', { class: 'row' },
+                  btn('Switch to Live Mode Now', async () => {
+                    await api('PUT', '/api/settings', { live: true, confirm_live: true });
+                    await refreshCache();
+                    render();
+                  }, 'sm bad')
+                )
+              );
+              toast('Recorded in Dry-run mode.');
+            }
+          } else {
+            toast('Post queued for scheduled publishing.');
           }
         })
       )

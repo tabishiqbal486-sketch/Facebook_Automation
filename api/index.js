@@ -51,7 +51,7 @@ module.exports = async function handler(req, res) {
     else if (url.pathname === '/api/auth/facebook/callback') url.pathname = '/auth/facebook/callback';
     else if (url.pathname.startsWith('/api/media/')) url.pathname = url.pathname.slice(4);
 
-    if (url.pathname.startsWith('/api/media/')) {
+    if (url.pathname.startsWith('/media/')) {
       let name;
       try {
         name = decodeURIComponent(url.pathname.slice('/api/media/'.length));

@@ -1,8 +1,26 @@
 {
+  "crons": [
+    {
+      "path": "/api/cron",
+      "schedule": "* * * * *"
+    }
+  ],
   "rewrites": [
-    { "source": "/api/:path*", "destination": "/api/index?__path=:path*" },
-    { "source": "/media/:path*", "destination": "/api/index?__path=media/:path*" },
-    { "source": "/webhook", "destination": "/api/index?__path=webhook" },
-    { "source": "/auth/facebook/callback", "destination": "/api/index?__path=auth/facebook/callback" }
+    {
+      "source": "/api/:path*",
+      "destination": "/api/index?__path=:path*"
+    },
+    {
+      "source": "/media/:path*",
+      "destination": "/api/index?__path=media/:path*"
+    },
+    {
+      "source": "/webhook",
+      "destination": "/api/index?__path=webhook"
+    },
+    {
+      "source": "/auth/facebook/callback",
+      "destination": "/api/index?__path=auth/facebook/callback"
+    }
   ]
 }
