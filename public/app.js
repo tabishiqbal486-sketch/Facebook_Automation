@@ -125,7 +125,7 @@ VIEWS.skills = async () => {
 };
 // ---------------- New Post
 VIEWS.newpost = async () => {
-  const st = await api('GET', '/api/status');
+  const [st, gs] = await Promise.all([api('GET', '/api/status'), api('GET', '/api/groups')]);
   const b = (cache.settings && cache.settings.business) || {};
   const pr = sel([['', '(Optional: draft from catalogue)']].concat(cache.products.map(p => [p.id, p.name])), '');
   const title = inp('', { placeholder: 'e.g. Luxury Velvet Corner Sofa (Brand New)' });
@@ -150,7 +150,7 @@ VIEWS.newpost = async () => {
     pagesList.length ? [
       el('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px' },
         el('b', null, 'Post to Pages (' + pagesList.length + ' connected):'),
-        btn('Toggle all', () => {
+        btn('Toggle all pages', () => {
           const allChecked = pageChecks.every(x => x.input.checked);
           pageChecks.forEach(x => { x.input.checked = !allChecked; });
           updatePreview();
@@ -162,6 +162,35 @@ VIEWS.newpost = async () => {
     ] : el('p', { class: 'mu' }, 'No Facebook Page connected yet. Post will run in dry-run mode.')
   );
   pageChecks.forEach(pc => pc.input.addEventListener('change', () => updatePreview()));
+
+  // Connected groups multi-select
+  const groupsList = Array.isArray(gs) ? gs : [];
+  const groupChecks = groupsList.map(g => ({
+    id: g.id,
+    name: g.name,
+    link: g.link,
+    input: el('input', { type: 'checkbox', checked: false })
+  }));
+
+  const groupsContainer = el('div', { class: 'ctx', style: 'padding:10px;margin-top:4px' },
+    groupsList.length ? [
+      el('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px' },
+        el('b', null, 'Post to Connected Groups (' + groupsList.length + ' saved):'),
+        btn('Toggle all groups', () => {
+          const allChecked = groupChecks.every(x => x.input.checked);
+          groupChecks.forEach(x => { x.input.checked = !allChecked; });
+          updatePreview();
+        }, 'sm alt')
+      ),
+      el('div', { class: 'grid g2' },
+        groupChecks.map(gc => el('label', { style: 'display:flex;gap:8px;align-items:center;cursor:pointer' },
+          gc.input,
+          el('span', null, el('b', null, gc.name), ' ', el('a', { href: gc.link, target: '_blank', rel: 'noopener noreferrer', style: 'font-size:12px;color:var(--ac);margin-left:4px' }, 'open link'))
+        ))
+      )
+    ] : el('p', { class: 'mu' }, 'No groups saved yet. You can add Facebook groups in the "Groups" tab.')
+  );
+  groupChecks.forEach(gc => gc.input.addEventListener('change', () => updatePreview()));
 
   const renderThumbs = () => {
     thumbsBox.replaceChildren(
@@ -202,9 +231,16 @@ VIEWS.newpost = async () => {
   });
 
   const prev = el('div', { class: 'box' });
+  const postResultBox = el('div', { class: 'box', style: 'display:none;background:var(--bg)' });
+
   const updatePreview = () => {
     const selectedPages = pageChecks.filter(x => x.input.checked).map(x => x.name);
-    const pagesLabel = pagesList.length ? (selectedPages.length ? selectedPages.join(', ') : '(None selected - please choose at least one page)') : 'Dry-run test';
+    const selectedGroups = groupChecks.filter(x => x.input.checked).map(x => x.name);
+
+    const destParts = [];
+    if (selectedPages.length) destParts.push('Pages (' + selectedPages.length + '): ' + selectedPages.join(', '));
+    if (selectedGroups.length) destParts.push('Groups (' + selectedGroups.length + '): ' + selectedGroups.join(', '));
+    const pagesLabel = destParts.length ? destParts.join('  ·  ') : '(None selected - please choose at least one Page or Group)';
 
     let fullCaption = '';
     if (title.value.trim()) fullCaption += title.value.trim() + '\n\n';
@@ -244,7 +280,7 @@ VIEWS.newpost = async () => {
 
   return el('div', null,
     el('h2', null, 'New Post'),
-    el('p', { class: 'sub' }, 'Create and schedule Facebook posts with multiple images across multiple pages.'),
+    el('p', { class: 'sub' }, 'Create and schedule Facebook posts with multiple images across multiple pages and connected groups.'),
     modeBanner(),
     el('div', { class: 'box' },
       el('h3', null, '1. Post Details'),
@@ -273,11 +309,16 @@ VIEWS.newpost = async () => {
       pagesContainer
     ),
     el('div', { class: 'box' },
-      el('h3', null, '4. Caption & Scheduling'),
+      el('h3', null, '4. Facebook Groups (Select Multiple)'),
+      groupsContainer
+    ),
+    el('div', { class: 'box' },
+      el('h3', null, '5. Caption & Scheduling'),
       field('Post Caption / Description', cap),
       field('Schedule for later (optional)', when)
     ),
     prev,
+    postResultBox,
     el('div', { class: 'box' },
       el('label', { style: 'display:flex;gap:8px;align-items:center' }, ok, 'I have checked the preview and want to publish this post'),
       el('div', { class: 'row' },
@@ -288,8 +329,9 @@ VIEWS.newpost = async () => {
             return;
           }
           const selectedPages = pageChecks.filter(x => x.input.checked).map(x => x.id);
-          if (pagesList.length && !selectedPages.length) {
-            toast('Please select at least one Facebook Page.', true);
+          const selectedGroups = groupChecks.filter(x => x.input.checked).map(x => x.id);
+          if (pagesList.length && !selectedPages.length && !selectedGroups.length) {
+            toast('Please select at least one Facebook Page or Group.', true);
             return;
           }
           if (!ok.checked) {
@@ -304,6 +346,7 @@ VIEWS.newpost = async () => {
 
           const r = await api('POST', '/api/posts/publish', {
             page_ids: selectedPages.length ? selectedPages : (pagesList.length ? [pagesList[0].id] : undefined),
+            group_ids: selectedGroups,
             page_id: selectedPages[0] || (pagesList[0] && pagesList[0].id) || 'dry',
             product_ids: pr.value ? [pr.value] : [],
             title: title.value.trim(),
@@ -315,8 +358,24 @@ VIEWS.newpost = async () => {
             when: when.value ? new Date(when.value).getTime() : undefined
           });
 
-          const count = (r.jobs && r.jobs.length) || 1;
-          toast(r.live ? ('Post queued for ' + count + ' page(s)!') : ('Dry-run: recorded for ' + count + ' page(s) (not sent to FB).'));
+          const destSummary = [];
+          if (selectedPages.length) destSummary.push(selectedPages.length + ' page(s)');
+          if (selectedGroups.length) destSummary.push(selectedGroups.length + ' group(s)');
+          const summaryText = destSummary.join(' and ') || 'destinations';
+
+          toast(r.live ? ('Post queued for ' + summaryText + '!') : ('Dry-run: recorded for ' + summaryText + ' (not sent to FB).'));
+
+          if (selectedGroups.length) {
+            const chosenGroups = groupsList.filter(g => selectedGroups.includes(g.id));
+            postResultBox.style.display = 'block';
+            postResultBox.replaceChildren(
+              el('h3', null, '✔ Post Queued for Groups (' + chosenGroups.length + ')'),
+              el('p', { class: 'mu' }, 'Posts have been queued and tracked in cooldown history. You can also view the groups below:'),
+              el('div', { class: 'row' },
+                ...chosenGroups.map(g => el('a', { href: g.link, target: '_blank', rel: 'noopener noreferrer', class: 'button sm alt', style: 'padding:6px 12px;text-decoration:none;display:inline-block;border:1px solid var(--ln);border-radius:6px;font-weight:600' }, 'Open ' + g.name + ' ↗'))
+              )
+            );
+          }
         })
       )
     )
