@@ -37,7 +37,7 @@ const VIEWS = {};
 // ---------------- Dashboard
 VIEWS.dashboard = async () => {
   const [d, st] = await Promise.all([api('GET', '/api/dashboard'), api('GET', '/api/status')]);
-  return el('div', null, el('div', { class: 'welcome-header', style: 'font-size:18px;font-weight:700;margin-bottom:8px;color:var(--ac)' }, 'Welcome, ' + (localStorage.getItem('username') || 'Username')), el('h2', null, 'Dashboard'), el('p', { class: 'sub' }, 'What needs attention right now.'), modeBanner(),
+  return el('div', null, el('div', { class: 'welcome-header', style: 'font-size:18px;font-weight:700;margin-bottom:8px;color:var(--ac)' }, 'Welcome, ' + (localStorage.getItem('username') || 'Tabish')), el('h2', null, 'Dashboard'), el('p', { class: 'sub' }, 'What needs attention right now.'), modeBanner(),
     el('div', { class: 'grid g4' }, stat(d.open_questions, 'Questions for me', d.open_questions ? 'wn' : ''), stat(d.orders_to_review, 'New order requests'), stat(d.new_enquiries, 'New enquiries'), stat(d.messages_in_today, 'Messages today'), stat(d.comments_today, 'Comments today'), stat(d.replies_sent_today, 'Replies sent today'), stat(d.replies_dry_today, 'Recorded (not sent)'), stat(d.failed_jobs, 'Failed sends', d.failed_jobs ? 'er' : ''), stat(d.followups_manual, 'Follow-ups to send myself'), stat(d.customers, 'Customers'), stat(d.products, 'Products'), stat(d.orders.confirmed + d.orders.dispatched, 'Orders in progress')),
     !st.meta_ready ? el('div', { class: 'box' }, el('h3', null, 'Facebook is not connected yet'), el('p', { class: 'mu' }, 'The assistant works in test mode. To receive real comments and messages, follow SETUP-META.md and use Settings.')) : null,
     el('div', { class: 'box' }, el('h3', null, 'Recent activity'), el('table', null, d.recent.map(l => el('tr', null, el('td', { class: 'mu' }, fmt(l.ts)), el('td', null, badge(l.kind)), el('td', null, l.text))))));
@@ -125,10 +125,202 @@ VIEWS.skills = async () => {
 };
 // ---------------- New Post
 VIEWS.newpost = async () => {
-  const st = await api('GET', '/api/status'), pr = sel(cache.products.map(p => [p.id, p.name]), ''), pg = sel(st.pages.length ? st.pages.map(p => [p.id, p.name]) : [['', '(no Page connected: dry-run only)']], ''), cap = area('', { style: 'min-height:160px' }), prev = el('div', { class: 'box' }), when = el('input', { type: 'datetime-local' }), ok = el('input', { type: 'checkbox' }); let imgs = [];
-  const draw = async () => { const d = await api('POST', '/api/posts/draft', { product_id: pr.value }); cap.value = d.caption; imgs = d.images; prev.replaceChildren(el('h3', null, 'Preview'), el('div', { class: 'thumbs' }, d.images.slice(0, 3).map(f => el('img', { src: '/media/' + f, alt: '' }))), el('p', { style: 'white-space:pre-wrap' }, cap.value), d.warnings.map(w => el('p', { class: 'wn' }, '⚠ ' + w))); };
-  return el('div', null, el('h2', null, 'New Post'), el('p', { class: 'sub' }, 'Drafted only from your catalogue. Preview it, then confirm.'), modeBanner(), el('div', { class: 'box' }, el('div', { class: 'grid g2' }, field('Product', pr), field('Facebook Page', pg)), el('div', { class: 'row' }, btn('Draft caption from catalogue', draw)), field('Caption (you can edit)', cap), field('Schedule for later (optional)', when)), prev,
-    el('div', { class: 'box' }, el('label', { style: 'display:flex;gap:8px;align-items:center' }, ok, 'I have checked the preview and want to publish this'), el('div', { class: 'row' }, btn('Publish', async () => { const r = await api('POST', '/api/posts/publish', { page_id: pg.value, product_ids: [pr.value], caption: cap.value, confirm: ok.checked, when: when.value ? new Date(when.value).getTime() : undefined }); toast(r.live ? 'Queued for publishing' : 'Dry-run: recorded, not published'); }))));
+  const st = await api('GET', '/api/status');
+  const b = (cache.settings && cache.settings.business) || {};
+  const pr = sel([['', '(Optional: draft from catalogue)']].concat(cache.products.map(p => [p.id, p.name])), '');
+  const title = inp('', { placeholder: 'e.g. Luxury Velvet Corner Sofa (Brand New)' });
+  const loc = inp(b.location || '', { placeholder: 'e.g. Birmingham, Manchester, or Nationwide UK' });
+  const cap = area('', { style: 'min-height:140px', placeholder: 'Write details, prices, dimensions, delivery options...' });
+  const when = el('input', { type: 'datetime-local' });
+  const ok = el('input', { type: 'checkbox' });
+  const up = el('input', { type: 'file', accept: 'image/*', multiple: true });
+
+  let imgs = [];
+  const thumbsBox = el('div', { class: 'thumbs', style: 'margin-top:8px' });
+
+  // Connected pages multi-select
+  const pagesList = st.pages && st.pages.length ? st.pages : [];
+  const pageChecks = pagesList.map(p => ({
+    id: p.id,
+    name: p.name,
+    input: el('input', { type: 'checkbox', checked: true })
+  }));
+
+  const pagesContainer = el('div', { class: 'ctx', style: 'padding:10px;margin-top:4px' },
+    pagesList.length ? [
+      el('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px' },
+        el('b', null, 'Post to Pages (' + pagesList.length + ' connected):'),
+        btn('Toggle all', () => {
+          const allChecked = pageChecks.every(x => x.input.checked);
+          pageChecks.forEach(x => { x.input.checked = !allChecked; });
+          updatePreview();
+        }, 'sm alt')
+      ),
+      el('div', { class: 'grid g2' },
+        pageChecks.map(pc => el('label', { style: 'display:flex;gap:8px;align-items:center;cursor:pointer' }, pc.input, pc.name))
+      )
+    ] : el('p', { class: 'mu' }, 'No Facebook Page connected yet. Post will run in dry-run mode.')
+  );
+  pageChecks.forEach(pc => pc.input.addEventListener('change', () => updatePreview()));
+
+  const renderThumbs = () => {
+    thumbsBox.replaceChildren(
+      ...imgs.map((fl, idx) => el('div', { style: 'position:relative;display:inline-block' },
+        el('img', { src: '/media/' + fl, alt: '', style: 'width:90px;height:90px;object-fit:cover;border-radius:8px;border:1px solid var(--ln)' }),
+        el('button', {
+          type: 'button',
+          class: 'bad sm',
+          style: 'position:absolute;top:2px;right:2px;padding:1px 6px;line-height:1.2;font-size:11px',
+          onclick: () => { imgs.splice(idx, 1); renderThumbs(); updatePreview(); }
+        }, '✕')
+      ))
+    );
+  };
+
+  const uploadFiles = async (files) => {
+    if (!files || !files.length) return;
+    toast('Uploading ' + files.length + ' image(s)...');
+    for (const f of files) {
+      try {
+        const data = await resize(f);
+        const r = await api('POST', '/api/upload-image', { data });
+        if (r && r.file) imgs.push(r.file);
+      } catch (err) {
+        toast('Failed to upload ' + f.name + ': ' + err.message, true);
+      }
+    }
+    renderThumbs();
+    updatePreview();
+    toast('Images ready (' + imgs.length + ' total)');
+  };
+
+  up.addEventListener('change', async () => {
+    if (up.files && up.files.length) {
+      await uploadFiles(up.files);
+      up.value = '';
+    }
+  });
+
+  const prev = el('div', { class: 'box' });
+  const updatePreview = () => {
+    const selectedPages = pageChecks.filter(x => x.input.checked).map(x => x.name);
+    const pagesLabel = pagesList.length ? (selectedPages.length ? selectedPages.join(', ') : '(None selected - please choose at least one page)') : 'Dry-run test';
+
+    let fullCaption = '';
+    if (title.value.trim()) fullCaption += title.value.trim() + '\n\n';
+    if (loc.value.trim()) fullCaption += '📍 Location: ' + loc.value.trim() + '\n\n';
+    fullCaption += cap.value.trim();
+
+    prev.replaceChildren(
+      el('h3', null, 'Post Preview'),
+      el('p', { class: 'mu' }, 'Publishing to: ', el('b', null, pagesLabel)),
+      title.value.trim() ? el('h3', { style: 'margin:4px 0;color:var(--ac)' }, title.value.trim()) : null,
+      loc.value.trim() ? el('p', { style: 'font-weight:600;margin:2px 0' }, '📍 ' + loc.value.trim()) : null,
+      imgs.length ? el('div', { class: 'thumbs', style: 'margin:8px 0' },
+        imgs.map(f => el('img', { src: '/media/' + f, alt: '', style: 'width:84px;height:84px;object-fit:cover;border-radius:8px' }))
+      ) : el('p', { class: 'wn', style: 'margin:8px 0' }, '⚠ No images uploaded yet. You must upload at least one image before publishing.'),
+      el('p', { style: 'white-space:pre-wrap;background:var(--bg);padding:10px;border-radius:8px;border:1px solid var(--ln)' }, fullCaption || '(Empty caption)')
+    );
+  };
+
+  const draftFromProduct = async () => {
+    if (!pr.value) return toast('Select a catalogue product first', true);
+    const d = await api('POST', '/api/posts/draft', { product_id: pr.value });
+    const product = cache.products.find(p => p.id === pr.value);
+    if (product) title.value = product.name;
+    cap.value = d.caption;
+    if (d.images && d.images.length) {
+      imgs = Array.from(new Set(imgs.concat(d.images)));
+      renderThumbs();
+    }
+    updatePreview();
+    toast('Drafted from ' + (product ? product.name : 'product'));
+  };
+
+  [title, loc, cap].forEach(input => input.addEventListener('input', updatePreview));
+
+  renderThumbs();
+  updatePreview();
+
+  return el('div', null,
+    el('h2', null, 'New Post'),
+    el('p', { class: 'sub' }, 'Create and schedule Facebook posts with multiple images across multiple pages.'),
+    modeBanner(),
+    el('div', { class: 'box' },
+      el('h3', null, '1. Post Details'),
+      el('div', { class: 'grid g2' },
+        field('Post Title', title),
+        field('Post Location (City / Region)', loc)
+      ),
+      el('div', { style: 'margin-top:10px' },
+        field('Optional: Autofill from Catalogue Product', pr),
+        btn('Autofill title, caption & photos', draftFromProduct, 'sm alt')
+      )
+    ),
+    el('div', { class: 'box' },
+      el('h3', null, '2. Post Images (Upload Multiple Images)'),
+      el('p', { class: 'mu' }, 'Upload 1 or more photos for this post. Multiple images will be published together on Facebook.'),
+      field('Select images to upload', up),
+      btn('Upload selected images', async () => {
+        if (!up.files || !up.files.length) return toast('Choose image files first', true);
+        await uploadFiles(up.files);
+        up.value = '';
+      }, 'alt'),
+      thumbsBox
+    ),
+    el('div', { class: 'box' },
+      el('h3', null, '3. Facebook Pages (Select Multiple)'),
+      pagesContainer
+    ),
+    el('div', { class: 'box' },
+      el('h3', null, '4. Caption & Scheduling'),
+      field('Post Caption / Description', cap),
+      field('Schedule for later (optional)', when)
+    ),
+    prev,
+    el('div', { class: 'box' },
+      el('label', { style: 'display:flex;gap:8px;align-items:center' }, ok, 'I have checked the preview and want to publish this post'),
+      el('div', { class: 'row' },
+        btn('Publish Post', async () => {
+          if (!imgs.length) {
+            toast('Please upload at least one image for the post.', true);
+            up.focus();
+            return;
+          }
+          const selectedPages = pageChecks.filter(x => x.input.checked).map(x => x.id);
+          if (pagesList.length && !selectedPages.length) {
+            toast('Please select at least one Facebook Page.', true);
+            return;
+          }
+          if (!ok.checked) {
+            toast('Please check the confirmation box before publishing.', true);
+            return;
+          }
+
+          let fullCaption = '';
+          if (title.value.trim()) fullCaption += title.value.trim() + '\n\n';
+          if (loc.value.trim()) fullCaption += '📍 Location: ' + loc.value.trim() + '\n\n';
+          fullCaption += cap.value.trim();
+
+          const r = await api('POST', '/api/posts/publish', {
+            page_ids: selectedPages.length ? selectedPages : (pagesList.length ? [pagesList[0].id] : undefined),
+            page_id: selectedPages[0] || (pagesList[0] && pagesList[0].id) || 'dry',
+            product_ids: pr.value ? [pr.value] : [],
+            title: title.value.trim(),
+            location: loc.value.trim(),
+            images: imgs,
+            caption: fullCaption || title.value.trim() || 'New Post',
+            confirm: true,
+            require_image: true,
+            when: when.value ? new Date(when.value).getTime() : undefined
+          });
+
+          const count = (r.jobs && r.jobs.length) || 1;
+          toast(r.live ? ('Post queued for ' + count + ' page(s)!') : ('Dry-run: recorded for ' + count + ' page(s) (not sent to FB).'));
+        })
+      )
+    )
+  );
 };
 // ---------------- Business
 VIEWS.business = async () => {

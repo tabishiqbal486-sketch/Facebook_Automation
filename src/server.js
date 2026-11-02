@@ -105,6 +105,18 @@ function createApp(o = {}) {
     p.images.push(f); p.updated = now(); db.save(); return p;
   });
   R('DELETE', '/api/products/:id/images/:file', async r => { const p = ids('products')(r); if (!p) throw bad('Not found', 404); const f = path.basename(r.params.file); if (!p.images.includes(f)) throw bad('Photo not found', 404); p.images = p.images.filter(x => x !== f); if (o.imageStore) await o.imageStore.delete(f); else { try { fs.unlinkSync(path.join(dataDir, 'images', f)); } catch (e) { /* already gone */ } } db.save(); return p; });
+  R('POST', '/api/upload-image', async r => {
+    const m = String(r.body.data || '').match(/^data:image\/(jpeg|png|webp);base64,([A-Za-z0-9+/=]+)$/);
+    if (!m) throw bad('Send a JPEG, PNG or WebP image');
+    const buf = Buffer.from(m[2], 'base64');
+    if (buf.length > 5e6) throw bad('Photo is too large (max 5 MB)');
+    const ok = (m[1] === 'jpeg' && buf[0] === 0xff && buf[1] === 0xd8) || (m[1] === 'png' && buf[0] === 0x89 && buf[1] === 0x50) || (m[1] === 'webp' && buf.subarray(8, 12).toString() === 'WEBP');
+    if (!ok) throw bad('That file is not a real ' + m[1].toUpperCase() + ' image');
+    const f = crypto.randomBytes(12).toString('hex') + '.' + (m[1] === 'jpeg' ? 'jpg' : m[1]);
+    if (o.imageStore) await o.imageStore.put(f, buf, MIME['.' + (m[1] === 'jpeg' ? 'jpg' : m[1])]);
+    else fs.writeFileSync(path.join(dataDir, 'images', f), buf);
+    return { file: f, url: '/media/' + f };
+  });
   R('POST', '/api/products/:id/cover', r => { const p = ids('products')(r); const f = path.basename(String(r.body.file || '')); if (!p || !p.images.includes(f)) throw bad('Photo not found', 404); p.images = [f].concat(p.images.filter(x => x !== f)); db.save(); return p; });
   // ---------- post to product mapping ----------
   R('GET', '/api/posts', () => db.list('posts').map(x => Object.assign({}, x, { products: x.product_ids.map(id => (db.get('products', id) || {}).name) })).sort((a, b) => b.created - a.created));
@@ -112,10 +124,44 @@ function createApp(o = {}) {
   R('DELETE', '/api/posts/:id', r => { db.del('posts', r.params.id); db.save(); return { ok: true }; });
   R('POST', '/api/posts/draft', r => { const p = db.get('products', r.body.product_id); if (!p) throw bad('Choose a product'); const b = db.settings.business, parts = [p.name + (p.price_pence != null ? ' - ' + gbp(p.sale_price_pence != null ? p.sale_price_pence : p.price_pence) : '')]; if (p.description) parts.push(p.description); if (p.colours.length) parts.push('Available in: ' + p.colours.join(', ')); if (b.delivery_text) parts.push(b.delivery_text); if (b.payment_text) parts.push(b.payment_text); if (b.phone) parts.push('WhatsApp: ' + b.phone); return { caption: parts.join('\n\n'), images: p.images, warnings: [p.price_pence == null ? 'This product has no price' : null, !p.images.length ? 'This product has no photos' : null, !p.description ? 'No description in the catalogue' : null].filter(Boolean) }; });
   R('POST', '/api/posts/publish', r => {
-    if (!r.body.confirm) throw bad('Please preview and confirm before publishing'); const page = db.get('pages', r.body.page_id) || (db.settings.live ? null : { id: 'dry' }); if (!page) throw bad('Choose a connected Page'); const text = String(r.body.caption || '').trim(); if (!text) throw bad('Caption is empty');
-    const prods = list(r.body.product_ids).map(i => db.get('products', i)); if (prods.some(p => !p)) throw bad('Product not found');
-    const soon = now() + (engine.fast ? 20 : 1000), when = r.body.when ? Math.max(soon, +r.body.when) : soon; const j = engine.addJob({ type: 'publish_post', key: null, due_at: when, origin: 'owner', customer_id: 'none', page_id: page.id, payload: { text, files: prods.flatMap(p => p.images.slice(0, 3)), product_ids: prods.map(p => p.id) } });
-    db.log('post', (db.settings.live ? 'Post queued' : 'Post recorded in dry-run mode (not published)') + ': ' + text.slice(0, 50), j.id); db.save(); return { job: j, live: db.settings.live };
+    if (!r.body.confirm) throw bad('Please preview and confirm before publishing');
+    const pids = list(r.body.page_ids || r.body.page_id);
+    if (!pids.length) {
+      if (db.settings.live) throw bad('Choose a connected Page');
+      pids.push('dry');
+    }
+    const pages = pids.map(id => db.get('pages', id) || (db.settings.live ? null : { id: id || 'dry', name: 'Dry-run' }));
+    if (pages.some(p => !p)) throw bad('Choose a connected Page');
+    const text = String(r.body.caption || '').trim();
+    if (!text) throw bad('Caption is empty');
+    const prods = list(r.body.product_ids).map(i => db.get('products', i));
+    if (prods.some(p => !p)) throw bad('Product not found');
+    const directFiles = list(r.body.images);
+    const files = Array.from(new Set(directFiles.concat(prods.flatMap(p => p.images.slice(0, 10)))));
+    if (!files.length && r.body.require_image) throw bad('Please upload or select at least one image');
+    const soon = now() + (engine.fast ? 20 : 1000), when = r.body.when ? Math.max(soon, +r.body.when) : soon;
+    const jobs = [];
+    for (const page of pages) {
+      const j = engine.addJob({
+        type: 'publish_post',
+        key: null,
+        due_at: when,
+        origin: 'owner',
+        customer_id: 'none',
+        page_id: page.id,
+        payload: {
+          text,
+          title: r.body.title || '',
+          location: r.body.location || '',
+          files: files.slice(0, 10),
+          product_ids: prods.map(p => p.id)
+        }
+      });
+      db.log('post', (db.settings.live ? 'Post queued' : 'Post recorded in dry-run mode (not published)') + (pages.length > 1 ? ' (' + (page.name || page.id) + ')' : '') + ': ' + text.slice(0, 50), j.id);
+      jobs.push(j);
+    }
+    db.save();
+    return { job: jobs[0], jobs, live: db.settings.live };
   });
   // ---------- customers ----------
   const cview = c => Object.assign({}, c, { psid: undefined });
