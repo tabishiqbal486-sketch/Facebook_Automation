@@ -49,7 +49,13 @@ class Meta {
     }
 
     loginUrl(redirect, state, configId) {
-        const p = new URLSearchParams({ client_id: this.appId, redirect_uri: redirect, state, response_type: 'code', scope: 'pages_show_list,pages_messaging,pages_manage_posts,pages_read_engagement' });
+        const p = new URLSearchParams({ 
+            client_id: this.appId, 
+            redirect_uri: redirect, 
+            state, 
+            response_type: 'code', 
+            scope: 'pages_show_list,pages_messaging,pages_manage_posts,pages_read_engagement,pages_manage_metadata' 
+        });
         if (configId) p.set('config_id', configId);
         const host = this.base && this.base.includes('graph.facebook.com') ? 'https://www.facebook.com' : (this.base || 'https://www.facebook.com');
         return `${host}/dialog/oauth?${p.toString()}`;
