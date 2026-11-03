@@ -414,6 +414,9 @@ function createApp(o = {}) {
 
       if (method !== 'GET' && method !== 'HEAD') return new Response(null, { status: 404 });
       if (o.assets) return o.assets.fetch(request);
+      // Serve legal/policy pages without .html extension
+      const policyMap = { '/privacy': 'privacy.html', '/terms': 'terms.html', '/delete-data': 'delete-data.html' };
+      if (policyMap[pathname]) { const pf = path.resolve(pub, policyMap[pathname]); if (fs.existsSync(pf)) return new Response(method === 'HEAD' ? null : fs.readFileSync(pf), { status: 200, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' } }); }
       const relative = pathname === '/' ? 'index.html' : decodeURIComponent(pathname.slice(1)), file = path.resolve(pub, relative);
       if (file !== pub && !file.startsWith(path.resolve(pub) + path.sep)) return new Response(null, { status: 404 });
       if (!fs.existsSync(file) || !fs.statSync(file).isFile()) return new Response(null, { status: 404 });
