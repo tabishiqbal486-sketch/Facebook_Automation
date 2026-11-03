@@ -15,6 +15,18 @@
     {
       "source": "/auth/facebook/callback",
       "destination": "/api/index?__path=auth/facebook/callback"
+    },
+    {
+      "source": "/privacy",
+      "destination": "/privacy.html"
+    },
+    {
+      "source": "/terms",
+      "destination": "/terms.html"
+    },
+    {
+      "source": "/delete-data",
+      "destination": "/delete-data.html"
     }
   ]
 }
