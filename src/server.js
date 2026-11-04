@@ -16,6 +16,7 @@ function seed(db) {
 }
 function productFrom(b, old) {
   const p = Object.assign({}, old || { id: uid('prod'), images: [], archived: false, created: now(), faqs: [] });
+  for (const k of ['images', 'faqs', 'specs', 'colours', 'keywords', 'addons']) if (!Array.isArray(p[k])) p[k] = [];
   if (b.name !== undefined) { if (!String(b.name).trim()) throw bad('Product name is required'); p.name = String(b.name).trim().slice(0, 120); }
   if (!p.name) throw bad('Product name is required');
   for (const [k, f] of [['price', 'price_pence'], ['sale_price', 'sale_price_pence'], ['lowest_price', 'lowest_price_pence']]) if (b[k] !== undefined) { const v = toPence(b[k]); if (Number.isNaN(v)) throw bad('Invalid ' + k.replace('_', ' ') + ' (use a positive amount such as 349 or £349)'); p[f] = v; }
@@ -140,31 +141,37 @@ function createApp(o = {}) {
     const prods = list(r.body.product_ids).map(i => db.get('products', i));
     if (prods.some(p => !p)) throw bad('Product not found');
     const directFiles = list(r.body.images);
-    const files = Array.from(new Set(directFiles.concat(prods.flatMap(p => p.images.slice(0, 10)))));
+    const files = Array.from(new Set(directFiles.length ? directFiles : prods.flatMap(p => p.images.slice(0, 10))));
     if (!files.length && r.body.require_image) throw bad('Please upload or select at least one image');
+    if (files.length > 10) throw bad('Choose no more than 10 images for one publish request');
+    const postFiles = files.length ? files : [null];
     
     const soon = now() + (engine.fast ? 20 : 1000);
     const jobs = [];
 
-    // Publish to Pages
+    // Publish one post per image to each selected Page.
     for (const page of pages) {
-      const j = engine.addJob({
-        type: 'publish_post',
-        key: null,
-        due_at: soon,
-        origin: 'owner',
-        customer_id: 'none',
-        page_id: page.id,
-        payload: {
-          text,
-          title: r.body.title || '',
-          location: r.body.location || '',
-          files: files.slice(0, 10),
-          product_ids: prods.map(p => p.id)
-        }
+      postFiles.forEach((file, index) => {
+        const j = engine.addJob({
+          type: 'publish_post',
+          key: null,
+          due_at: soon,
+          origin: 'owner',
+          customer_id: 'none',
+          page_id: page.id,
+          payload: {
+            text,
+            title: r.body.title || '',
+            location: r.body.location || '',
+            files: file ? [file] : [],
+            image_index: index + 1,
+            image_count: postFiles.length,
+            product_ids: prods.map(p => p.id)
+          }
+        });
+        db.log('post', (db.settings.live ? 'Publishing post' : 'Post recorded in dry-run mode (not published)') + ' (' + (page.name || page.id) + ', image ' + (index + 1) + ' of ' + postFiles.length + '): ' + text.slice(0, 50), j.id);
+        jobs.push(j);
       });
-      db.log('post', (db.settings.live ? 'Post queued' : 'Post recorded in dry-run mode (not published)') + (pages.length > 1 ? ' (' + (page.name || page.id) + ')' : '') + ': ' + text.slice(0, 50), j.id);
-      jobs.push(j);
     }
 
     const manualGroups = groups.map(group => ({
@@ -172,7 +179,13 @@ function createApp(o = {}) {
       name: group.name,
       link: group.link,
       status: 'manual_required',
-      message: 'Meta does not support publishing posts to Facebook Groups through the Graph API.'
+      message: 'Meta does not support publishing posts to Facebook Groups through the Graph API.',
+      posts: postFiles.map((file, index) => ({
+        image: file,
+        image_index: index + 1,
+        image_count: postFiles.length,
+        caption: text
+      }))
     }));
     for (const group of groups) {
       db.log('post', 'Manual Facebook Group post required for ' + group.name + ': ' + text.slice(0, 50), group.id);
@@ -188,6 +201,10 @@ function createApp(o = {}) {
         status: j.status,
         result: j.result,
         meta_id: j.meta_id || null,
+        page_name: (db.get('pages', j.page_id) || {}).name || j.page_id,
+        image_index: j.payload.image_index,
+        image_count: j.payload.image_count,
+        image_file: j.payload.files[0],
         error: j.error || null
       });
     }

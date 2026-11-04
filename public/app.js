@@ -311,7 +311,7 @@ VIEWS.newpost = async () => {
     ),
     el('div', { class: 'box' },
       el('h3', null, '2. Post Images (Upload Multiple Images)'),
-      el('p', { class: 'mu' }, 'Upload 1 or more photos for this post. Multiple images will be published together on Facebook.'),
+      el('p', { class: 'mu' }, 'Upload one or more photos. Each photo becomes a separate post with the same title, location, and caption.'),
       field('Select images to upload', up),
       btn('Upload selected images', async () => {
         if (!up.files || !up.files.length) return toast('Choose image files first', true);
@@ -383,25 +383,29 @@ VIEWS.newpost = async () => {
             const manualGroups = r.manual_groups || [];
             const postLinks = sent.map(s => {
               const postUrl = 'https://facebook.com/' + (s.meta_id || '');
-              return el('a', { href: postUrl, target: '_blank', rel: 'noopener noreferrer', class: 'button sm', style: 'padding:6px 12px;text-decoration:none;display:inline-block;background:var(--ok);color:#fff;border-radius:6px;font-weight:700' }, 'View Page Post (' + (s.meta_id || 'link') + ') ↗');
+              return el('a', { href: postUrl, target: '_blank', rel: 'noopener noreferrer', class: 'button sm', style: 'padding:6px 12px;text-decoration:none;display:inline-block;background:var(--ok);color:#fff;border-radius:6px;font-weight:700' }, 'View ' + s.page_name + ' · image ' + s.image_index + '/' + s.image_count + ' ↗');
             });
-            const groupSteps = manualGroups.flatMap(group => [
+            const groupSteps = manualGroups.map(group =>
               el('div', { class: 'box' },
-                el('b', null, group.name),
+                el('h3', null, group.name),
                 el('p', { class: 'mu' }, group.message),
-                imgs.length ? el('div', { class: 'row' }, ...imgs.map((file, index) => el('a', { href: '/media/' + encodeURIComponent(file), target: '_blank', rel: 'noopener noreferrer' }, 'Open image ' + (index + 1)))) : null,
-                el('div', { class: 'row' },
-                  el('a', { href: group.link, target: '_blank', rel: 'noopener noreferrer', class: 'button sm alt' }, 'Open Group'),
-                  btn('Copy post text', () => copy(fullCaption), 'sm alt'),
-                  btn('Mark as posted', async () => { await api('POST', '/api/groups/' + group.id + '/posted'); toast('Group marked as posted'); }, 'sm')
-                )
+                ...group.posts.map(post => el('div', { class: 'box' },
+                  el('b', null, 'Separate post · image ' + post.image_index + ' of ' + post.image_count),
+                  post.image ? el('div', { class: 'row' }, el('a', { href: '/media/' + encodeURIComponent(post.image), target: '_blank', rel: 'noopener noreferrer', class: 'button sm alt' }, 'Open this image')) : null,
+                  el('div', { class: 'row' },
+                    el('a', { href: group.link, target: '_blank', rel: 'noopener noreferrer', class: 'button sm alt' }, 'Open Group'),
+                    btn('Copy post text', () => copy(post.caption), 'sm alt'),
+                    btn('Mark group posted', async () => { await api('POST', '/api/groups/' + group.id + '/posted'); toast('Group marked as posted'); }, 'sm')
+                  )
+                ))
               )
-            ]);
+            );
 
             if (failed.length) {
               postResultBox.replaceChildren(
                 el('h3', { style: 'color:var(--er)' }, sent.length ? '⚠ Some Facebook Page posts failed' : '✖ Facebook Page error'),
-                el('p', { class: 'mu' }, 'Meta could not publish to ' + failed.length + ' selected Page(s): ' + failed[0].error),
+                el('p', { class: 'mu' }, 'Meta could not publish ' + failed.length + ' Page post(s):'),
+                ...failed.map(x => el('p', { class: 'mu' }, x.page_name + ' · image ' + x.image_index + '/' + x.image_count + ': ' + x.error)),
                 postLinks.length ? el('div', { class: 'row' }, ...postLinks) : null,
                 failed.some(x => /token expired|permission|oauth/i.test(x.error || '')) ? el('div', { class: 'row' }, btn('Open Settings to Reconnect', () => { location.hash = 'settings'; }, 'sm alt')) : null,
                 manualGroups.length ? el('p', { class: 'mu' }, 'Selected Facebook Groups were not sent to Meta; they require manual posting below.') : null,
@@ -410,8 +414,8 @@ VIEWS.newpost = async () => {
               toast(sent.length ? 'Some Page posts failed; successful posts are listed below.' : 'Facebook Page post failed: ' + failed[0].error, true);
             } else if (sent.length) {
               postResultBox.replaceChildren(
-                el('h3', { style: 'color:var(--ok)' }, '✔ Published to ' + sent.length + ' Facebook Page(s)'),
-                el('p', null, 'Page posts were published immediately.'),
+                el('h3', { style: 'color:var(--ok)' }, '✔ Published ' + sent.length + ' separate post(s) to Facebook Pages'),
+                el('p', null, 'Each selected image was published as its own immediate Page post with the same caption.'),
                 el('div', { class: 'row' }, ...postLinks),
                 manualGroups.length ? el('p', { class: 'mu' }, 'Facebook does not allow this app to publish to Groups. Complete the manual group steps below; no group post was sent.') : null,
                 ...groupSteps
