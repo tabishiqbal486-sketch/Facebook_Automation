@@ -45,7 +45,27 @@ function createApp(o = {}) {
   const R = (m, p, h, open) => routes.push({ m, re: new RegExp('^' + p.replace(/:(\w+)/g, '(?<$1>[^/]+)') + '$'), h, open });
   const ids = (c) => (r) => db.get(c, r.params.id);
   // ---------- status / dashboard ----------
-  const pageView = p => ({ id: p.id, name: p.name, token_status: p.token_status, connected_at: p.connected_at });
+  const pageView = p => ({ id: p.id, name: p.name, token_status: p.token_status, webhook_status: p.webhook_status || 'unknown', webhook_error: p.webhook_error || null, connected_at: p.connected_at });
+  const postBatchView = id => {
+    const jobs = db.filter('jobs', j => j.batch_id === id).sort((a, b) => a.created - b.created);
+    if (!jobs.length) throw bad('Post batch not found', 404);
+    const sent = jobs.filter(j => j.status === 'done' && j.result === 'sent').length;
+    const dry_run = jobs.filter(j => j.status === 'done' && j.result === 'dry_run').length;
+    const pending = jobs.filter(j => j.status === 'pending').length;
+    const failed = jobs.filter(j => j.status === 'failed').length;
+    const unknown = jobs.filter(j => j.status === 'unknown').length;
+    const cancelled = jobs.filter(j => j.status === 'cancelled').length;
+    const status = pending ? 'processing' : unknown ? 'attention' : failed || cancelled ? (sent || dry_run ? 'partial' : 'failed') : dry_run ? 'dry_run' : 'completed';
+    return {
+      batch_id: id, status, total: jobs.length, sent, dry_run, pending, failed, unknown, cancelled,
+      results: jobs.map(j => ({
+        id: j.id, page_id: j.page_id, page_name: (db.get('pages', j.page_id) || {}).name || j.page_id,
+        status: j.status, result: j.result, meta_id: j.meta_id || null,
+        image_index: j.payload.image_index, image_count: j.payload.image_count,
+        image_file: (j.payload.files || [])[0], error: j.error || null
+      }))
+    };
+  };
   R('POST', '/api/login', r => {
     const supplied = r.body.key || (r.headers.authorization || '').replace(/^Bearer\s+/i, '');
     if (!safeEq(supplied, adminKey)) throw bad('Wrong key', 401);
@@ -124,7 +144,7 @@ function createApp(o = {}) {
   R('POST', '/api/posts', r => { const pid = String(r.body.post_id || '').trim(); if (!pid) throw bad('Facebook post ID is required'); const pr = list(r.body.product_ids); if (!pr.length || pr.some(i => !db.get('products', i))) throw bad('Choose existing products'); const ex = db.find('posts', x => x.post_id === pid); const rec = ex || { id: uid('post'), post_id: pid, page_id: r.body.page_id || null, caption: '', created: now() }; Object.assign(rec, { product_ids: pr, verified: true, source: 'owner' }); db.put('posts', rec); db.log('catalogue', 'Mapped post ' + pid + ' to ' + pr.length + ' product(s)', rec.id); db.save(); return rec; });
   R('DELETE', '/api/posts/:id', r => { db.del('posts', r.params.id); db.save(); return { ok: true }; });
   R('POST', '/api/posts/draft', r => { const p = db.get('products', r.body.product_id); if (!p) throw bad('Choose a product'); const b = db.settings.business, parts = [p.name + (p.price_pence != null ? ' - ' + gbp(p.sale_price_pence != null ? p.sale_price_pence : p.price_pence) : '')]; if (p.description) parts.push(p.description); if (p.colours.length) parts.push('Available in: ' + p.colours.join(', ')); if (b.delivery_text) parts.push(b.delivery_text); if (b.payment_text) parts.push(b.payment_text); if (b.phone) parts.push('WhatsApp: ' + b.phone); return { caption: parts.join('\n\n'), images: p.images, warnings: [p.price_pence == null ? 'This product has no price' : null, !p.images.length ? 'This product has no photos' : null, !p.description ? 'No description in the catalogue' : null].filter(Boolean) }; });
-  R('POST', '/api/posts/publish', async r => {
+  R('POST', '/api/posts/publish', r => {
     if (!r.body.confirm) throw bad('Please preview and confirm before publishing');
     const pids = list(r.body.page_ids || r.body.page_id);
     const grpIds = list(r.body.group_ids);
@@ -144,9 +164,25 @@ function createApp(o = {}) {
     const files = Array.from(new Set(directFiles.length ? directFiles : prods.flatMap(p => p.images.slice(0, 10))));
     if (!files.length && r.body.require_image) throw bad('Please upload or select at least one image');
     if (files.length > 10) throw bad('Choose no more than 10 images for one publish request');
+    if (db.settings.live && files.some(file => !engine.imageUrl(file))) throw bad('Set BASE_URL to a public HTTPS address so Facebook can fetch each post image');
     const postFiles = files.length ? files : [null];
-    
-    const soon = now() + (engine.fast ? 20 : 1000);
+
+    const fingerprint = crypto.createHash('sha256').update(JSON.stringify({
+      page_ids: pids, group_ids: grpIds, product_ids: prods.map(p => p.id), caption: text,
+      title: r.body.title || '', location: r.body.location || '', files, require_image: !!r.body.require_image, live: db.settings.live
+    })).digest('hex');
+    const idempotencyKey = String(r.headers && r.headers.get('idempotency-key') || '').trim();
+    if (idempotencyKey && (idempotencyKey.length < 8 || idempotencyKey.length > 128)) throw bad('Idempotency-Key must be between 8 and 128 characters');
+    if (idempotencyKey) {
+      const previous = db.find('jobs', j => j.batch_key === idempotencyKey);
+      if (previous) {
+        if (previous.batch_fingerprint !== fingerprint) throw bad('This Idempotency-Key was already used for a different post request', 409);
+        const batch = postBatchView(previous.batch_id);
+        return Object.assign(batch, { manual_groups: groups.map(group => ({ id: group.id, name: group.name, link: group.link, status: 'manual_required', message: 'Meta does not support publishing posts to Facebook Groups through the Graph API.', posts: postFiles.map((file, index) => ({ image: file, image_index: index + 1, image_count: postFiles.length, caption: text })) })), live: db.settings.live });
+      }
+    }
+
+    const soon = now() + (engine.fast ? 20 : 0), batchId = uid('batch');
     const jobs = [];
 
     // Publish one post per image to each selected Page.
@@ -159,11 +195,15 @@ function createApp(o = {}) {
           origin: 'owner',
           customer_id: 'none',
           page_id: page.id,
+          batch_id: batchId,
+          batch_key: idempotencyKey || null,
+          batch_fingerprint: fingerprint,
           payload: {
             text,
             title: r.body.title || '',
             location: r.body.location || '',
             files: file ? [file] : [],
+            require_image: !!r.body.require_image,
             image_index: index + 1,
             image_count: postFiles.length,
             product_ids: prods.map(p => p.id)
@@ -191,33 +231,22 @@ function createApp(o = {}) {
       db.log('post', 'Manual Facebook Group post required for ' + group.name + ': ' + text.slice(0, 50), group.id);
     }
 
-    // Page posts are sent immediately; Facebook Group posts require manual publishing.
-    const results = [];
-    for (const j of jobs) {
-      await engine.runJob(j);
-      results.push({
-        id: j.id,
-        page_id: j.page_id,
-        status: j.status,
-        result: j.result,
-        meta_id: j.meta_id || null,
-        page_name: (db.get('pages', j.page_id) || {}).name || j.page_id,
-        image_index: j.payload.image_index,
-        image_count: j.payload.image_count,
-        image_file: j.payload.files[0],
-        error: j.error || null
-      });
-    }
-
     db.save();
-    return {
-      job: jobs[0],
-      jobs,
-      results,
-      manual_groups: manualGroups,
-      executed_immediately: true,
-      live: db.settings.live
-    };
+    if (!jobs.length) return { jobs, manual_groups: manualGroups, executed_immediately: false, live: db.settings.live };
+    return Object.assign(postBatchView(batchId), { jobs: jobs.map(j => ({ id: j.id, page_id: j.page_id })), manual_groups: manualGroups, live: db.settings.live });
+  });
+  R('GET', '/api/post-batches/:id', r => postBatchView(r.params.id));
+  R('POST', '/api/post-batches/:id/retry-failed', r => {
+    const jobs = db.filter('jobs', j => j.batch_id === r.params.id && j.status === 'failed');
+    if (!jobs.length) throw bad('This batch has no safely retryable failed posts', 409);
+    for (const j of jobs) {
+      j.status = 'pending'; j.attempts = 0; j.due_at = now(); j.error = null; j.finished = null; j.note = null;
+      delete j.result; delete j.meta_id;
+      const message = j.message_id && db.get('messages', j.message_id);
+      if (message) { message.status = 'queued'; delete message.error; delete message.meta_id; }
+    }
+    db.save();
+    return postBatchView(r.params.id);
   });
   // ---------- customers ----------
   const cview = c => Object.assign({}, c, { psid: undefined });
@@ -357,9 +386,14 @@ function createApp(o = {}) {
         if (!connected.ok) throw bad('Facebook connection failed: ' + connected.message, 502);
         for (const page of connected.data.accounts || []) {
           if (!page.id || !page.access_token) continue;
+          const record = { id: String(page.id), name: page.name || String(page.id), token_enc: U.encrypt(page.access_token, secret), token_status: 'ok', webhook_status: 'pending', connected_at: now() };
+          db.put('pages', record);
           const sub = await meta.subscribePage(page.access_token, String(page.id));
-          if (!sub.ok) throw bad('Could not subscribe Facebook Page ' + (page.name || page.id) + ': ' + sub.message, 502);
-          db.put('pages', { id: String(page.id), name: page.name || String(page.id), token_enc: U.encrypt(page.access_token, secret), token_status: 'ok', connected_at: now() });
+          record.webhook_status = sub.ok ? 'subscribed' : 'failed';
+          if (!sub.ok) {
+            record.webhook_error = sub.message;
+            db.log('facebook', 'Connected Page ' + record.name + ' but could not subscribe webhooks: ' + sub.message, record.id);
+          }
         }
         db.log('facebook', 'Connected ' + (connected.data.accounts || []).length + ' Facebook Page(s)');
         db.save();

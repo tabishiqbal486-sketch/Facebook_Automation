@@ -36,12 +36,12 @@ class Engine {
     const sim = !!opts.simulated, cust = this.upsertCustomer(sim ? 'sim' : 'facebook', ev.from_id || ('anon-' + ev.id), ev.from_name);
     if (ev.type === 'message' && !sim) cust.psid = String(ev.from_id);
     cancelFollowups(db, cust.id, 'customer replied');
-    const msg = db.put('messages', { id: uid('msg'), customer_id: cust.id, direction: 'in', channel: ev.type === 'comment' ? 'comment' : 'inbox', text: ev.text, post_id: ev.post_id || null, comment_id: ev.comment_id || null, page_id: ev.page_id, ts: ev.ts || now(), status: 'received', event_id: ev.id });
+    const msg = db.put('messages', { id: uid('msg'), customer_id: cust.id, direction: 'in', channel: ev.type === 'comment' ? 'comment' : 'inbox', text: ev.text || (ev.has_attachment ? '[Customer sent an image or file]' : ''), has_attachment: !!ev.has_attachment, post_id: ev.post_id || null, comment_id: ev.comment_id || null, page_id: ev.page_id, ts: ev.ts || now(), status: 'received', event_id: ev.id });
     const out = this.handle(cust, msg, ev, opts); db.save(); return out;
   }
   handle(cust, msg, ev, opts) {
     const db = this.db, lead = this.openLead(cust.id), outs = this.messagesOf(cust.id).filter(m => m.direction === 'out');
-    const ctx = { text: msg.text, channel: msg.channel, post_id: msg.post_id, customer: cust, lead, lastOutbound: outs[outs.length - 1] || null, products: db.list('products'), posts: db.list('posts'), knowledge: db.list('knowledge'), settings: this.s, forcedProductId: opts.forcedProductId, has_attachment: ev.has_attachment };
+    const ctx = { text: ev.text || '', channel: msg.channel, post_id: msg.post_id, customer: cust, lead, lastOutbound: outs[outs.length - 1] || null, products: db.list('products'), posts: db.list('posts'), knowledge: db.list('knowledge'), settings: this.s, forcedProductId: opts.forcedProductId, has_attachment: ev.has_attachment };
     const d = decide(ctx);
     db.put('decisions', { id: uid('dec'), message_id: msg.id, customer_id: cust.id, ts: now(), intents: d.intents, product_id: d.product_id, product_source: d.product_source, confidence: d.confidence, action: d.action, reason: d.reason, knowledge_id: d.knowledge_id || null });
     if (d.knowledge_id) { const k = db.get('knowledge', d.knowledge_id); if (k) { k.uses = (k.uses || 0) + 1; k.last_used = now(); } }
@@ -50,7 +50,7 @@ class Engine {
     if (d.flags.address) this.captureAddress(cust, d.flags.address, d, lead, msg);
     if (d.product_id && ['reply'].includes(d.action) && d.intents.some(i => ['price', 'buy', 'confirm', 'discount', 'photos', 'details', 'stock', 'colour'].includes(i))) this.touchLead(cust, d, lead, msg);
     if (d.action === 'ask_owner') {
-      const q = db.put('questions', { id: uid('q'), status: 'open', kind: d.ask.kind, customer_id: cust.id, message_id: msg.id, text: msg.text, channel: msg.channel, post_id: msg.post_id, page_id: msg.page_id, intents: d.intents, interpretation: d.interpretation || null, need: d.ask.need, product_id: d.product_id || null, candidates: d.candidates || [], created: now() });
+      const q = db.put('questions', { id: uid('q'), status: 'open', kind: d.ask.kind, customer_id: cust.id, message_id: msg.id, text: msg.text, has_attachment: !!ev.has_attachment, channel: msg.channel, post_id: msg.post_id, page_id: msg.page_id, intents: d.intents, interpretation: d.interpretation || null, need: d.ask.need, product_id: d.product_id || null, candidates: d.candidates || [], created: now() });
       if (this.s.holding_reply && ['no_info', 'product_unclear'].includes(d.ask.kind) && !cust.opt_out) { const recent = db.find('messages', m => m.customer_id === cust.id && m.direction === 'out' && m.holding && now() - m.ts < 3600e3); if (!recent) this.queueReplies(cust, msg, { reply: { dm: 'Thanks for your message! We are checking this for you and will get back to you shortly.', comment: 'Thanks for your message! We are checking this and will get back to you shortly.' }, images: [] }, { holding: true, origin: 'auto' }); }
       return { question: q.id, action: d.action };
     }
@@ -80,7 +80,14 @@ class Engine {
   }
   // ---------- outgoing ----------
   addJob(j) { if (j.key && this.db.find('jobs', x => x.key === j.key)) return null; return this.db.put('jobs', Object.assign({ id: uid('job'), status: 'pending', attempts: 0, created: now(), error: null }, j)); }
-  imageUrl(file) { return this.baseUrl ? this.baseUrl + '/media/' + file : null; }
+  imageUrl(file) {
+    if (!this.baseUrl || !file || /[\\/]/.test(String(file))) return null;
+    try {
+      const base = new URL(this.baseUrl);
+      if (base.protocol !== 'https:') return null;
+      return new URL('/media/' + encodeURIComponent(String(file)), base).toString();
+    } catch (e) { return null; }
+  }
   queueReplies(cust, msg, d, o) {
     const db = this.db, mn = this.s.delay.min * 60e3, mx = this.s.delay.max * 60e3, owner = o.origin === 'owner', f = this.fast;
     let at = now(); const step = () => { at += f ? 50 : (owner ? rnd(3e3, 12e3) : rnd(mn, mx)); return at; };
@@ -115,7 +122,7 @@ class Engine {
   }
   async runJob(j) {
     const db = this.db, c = db.get('customers', j.customer_id), m = j.message_id ? db.get('messages', j.message_id) : null, setM = (st, err, mid) => { if (m) { m.status = st; if (err) m.error = err; if (mid) m.meta_id = mid; m.sent_at = now(); } };
-    const stop = (st, err) => { j.status = st; j.error = err; j.finished = now(); setM(st === 'cancelled' ? 'cancelled' : 'failed', err); db.log('job', st + ': ' + j.type + ' - ' + (err || ''), j.id); };
+    const stop = (st, err) => { j.status = st; j.error = err; j.finished = now(); setM(st === 'cancelled' ? 'cancelled' : st === 'unknown' ? 'unknown' : 'failed', err); db.log('job', st + ': ' + j.type + ' - ' + (err || ''), j.id); };
     if (j.origin === 'auto' && this.s.autopilot !== 'on') return;
     const isPost = j.type === 'publish_post';
     if (isPost && j.payload && j.payload.group_db_id) return stop('failed', 'Facebook Group posts must be published manually; Meta does not support them through the Graph API');
@@ -137,7 +144,10 @@ class Engine {
     else if (j.type === 'dm') r = await this.meta.sendDM(token, page.id, c.psid || c.platform_id, j.payload.text);
     else if (j.type === 'image') { const url = this.imageUrl(j.payload.file); if (!url) return stop('failed', 'BASE_URL is not set, so Facebook cannot fetch the photo'); r = await this.meta.sendImage(token, page.id, c.psid || c.platform_id, url); }
     else if (j.type === 'publish_post') {
-      r = await this.meta.publishPost(token, page.id, j.payload.text, (j.payload.files || []).map(f => this.imageUrl(f)).filter(Boolean));
+      const files = j.payload.files || [], urls = files.map(f => this.imageUrl(f));
+      if (j.payload.require_image && !files.length) return stop('failed', 'This post requires at least one image');
+      if (urls.some(url => !url)) return stop('failed', 'Set BASE_URL to a public HTTPS address so Facebook can fetch the post image');
+      r = await this.meta.publishPost(token, page.id, j.payload.text, urls);
     }
     else return stop('failed', 'Unknown job type');
     if (r.ok) {
@@ -151,6 +161,7 @@ class Engine {
     j.attempts++; j.error = r.message; setM('queued', r.message);
     if (r.tokenExpired) { page.token_status = 'expired'; return stop('failed', 'Facebook access token expired. Reconnect the Page in Settings. (' + r.message + ')'); }
     if (r.permission) return stop('failed', 'Missing Meta permission or app review: ' + r.message);
+    if (isPost && r.retryable && (r.code === 'network' || Number(r.code) >= 500)) return stop('unknown', 'Facebook did not confirm whether this post was published. Check the Page before trying again to avoid duplicates. (' + r.message + ')');
     if (r.retryable && j.attempts < BACKOFF.length) { j.due_at = now() + (this.fast ? 40 : BACKOFF[j.attempts - 1]); j.note = 'Retrying after: ' + r.message; db.log('job', 'retry ' + j.attempts + ' ' + j.type + ': ' + r.message, j.id); return; }
     stop('failed', r.message);
   }

@@ -43,11 +43,7 @@ You can keep the existing GitHub repository and Vercel project. Commit and push 
    ```
    The import stops if the Supabase database already contains app records. The local database includes private customer/business data and encrypted Facebook tokens; keep its backup and `.env.local` private.
 5. Push the changes to the branch connected to your existing Vercel project. Confirm the deployment includes `/api/` functions and test the login and dashboard before connecting a Facebook webhook.
-6. For live scheduled processing, first use a Vercel plan that supports per-minute Cron Jobs. Add this to the top level of `vercel.json`, then redeploy:
-   ```
-   "crons": [{ "path": "/api/cron", "schedule": "* * * * *" }]
-   ```
-   Vercel sends the configured `CRON_SECRET` to the protected endpoint. Set the Meta webhook to `BASE_URL/webhook` and use the same `VERIFY_TOKEN`.
+6. Configure a Vercel Cron Job for `/api/cron` on a plan that supports per-minute Cron Jobs, then confirm the scheduled invocation succeeds after deployment. Add `"crons": [{ "path": "/api/cron", "schedule": "* * * * *" }]` to the top level of `vercel.json` when the selected plan permits that schedule. Vercel sends the configured `CRON_SECRET` to the protected endpoint. Set the Meta webhook to `BASE_URL/webhook` and use the same `VERIFY_TOKEN`.
 
 **Plan limits matter:** Vercel Hobby is restricted to personal, non-commercial use, and its Cron Jobs can run only once per day. This app's business use and queued messages need frequent scheduled processing, so use a plan and schedule that permit the intended use before enabling Live mode. Supabase Free has storage/database limits and may pause projects after inactivity; check its current plan details. Neither service is an unlimited $0 production guarantee.
 
@@ -67,7 +63,7 @@ You can keep the existing GitHub repository and Vercel project. Commit and push 
 - **Needs me.** Unclear messages, uncertain products, missing information, complaints and suspicious messages are never answered by guessing. They appear in *Needs me* with the message, context, post, what the assistant thinks and what it needs.
 - **It remembers.** Tick "Save my answer as approved knowledge" and the answer is stored in the database (it survives restarts). You can see, edit, disable or delete it in *Skills & Log*. Customer messages never become knowledge by themselves.
 - **Product matching.** Facebook post to product link first, then the words in the message, then your approved corrections. If it is uncertain it asks you and sends no price or photo.
-- **Safe sending.** Calm random delays, hourly and daily limits, 24-hour and 7-day Meta rules, one private reply per comment, duplicate event protection, retries, and real error messages. Failed sends show the actual error with Retry.
+- **Safe sending.** Calm random delays, hourly and daily limits, 24-hour and 7-day Meta rules, one private reply per comment, duplicate event protection, retries, and real error messages. Failed sends show the actual error with Retry. Publish batches are saved before the worker sends them; uncertain Facebook responses are not retried automatically to avoid duplicate public posts.
 - **Payments and dispatch** are never marked automatically. You confirm them yourself with a note.
 
 ## Build an .exe (optional)
@@ -82,7 +78,7 @@ npm test
 ## Honest limitations
 - The reply engine is rule-based with fuzzy matching, not a large language model. That is deliberate: it cannot invent prices or promises. It does not read images and does not use post captions for matching (only your post-to-product links).
 - Real Facebook sending was tested only against a fake Meta server. The first live test must be on your own Page and your own account. Meta app review or permissions may be needed (see SETUP-META.md).
-- New Post publishes immediately to selected Facebook Pages, creating one separate post per selected image with the same caption. Group publishing and connection controls are not exposed in the dashboard because Meta's Graph API does not support publishing to Groups.
+- New Post durably queues publishing to selected Facebook Pages, creating one separate post per selected image with the same caption. The local worker starts within about a second; hosted processing follows the configured cron interval. Group publishing and connection controls are not exposed in the dashboard because Meta's Graph API does not support publishing to Groups.
 - Facebook only allows automatic messages within 24 hours of the customer's last message. Later follow-ups become tasks for you.
 - There is one access key (no separate staff accounts). Keep the computer and the key private.
 - Pending replies are saved, so a restart does not lose them. The software must be running (and reachable on the internet) to receive Facebook events.

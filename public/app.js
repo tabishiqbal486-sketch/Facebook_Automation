@@ -1,8 +1,8 @@
 'use strict';
 const KEY = () => sessionStorage.getItem('fsa-key') || '';
 const el = (t, a, ...c) => { const e = document.createElement(t); let val; for (const [k, v] of Object.entries(a || {})) { if (k === 'class') e.className = v; else if (k.startsWith('on')) e.addEventListener(k.slice(2), v); else if (k === 'value') val = v; else if (v !== false && v != null) e.setAttribute(k, v === true ? '' : v); } c.flat(9).forEach(x => { if (x == null || x === false) return; e.append(x.nodeType ? x : document.createTextNode(String(x))); }); if (val !== undefined) e.value = val; return e; };
-async function api(method, path, body) {
-  const r = await fetch(path, { method, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + KEY() }, body: body ? JSON.stringify(body) : undefined });
+async function api(method, path, body, extraHeaders) {
+  const r = await fetch(path, { method, headers: Object.assign({ 'Content-Type': 'application/json', Authorization: 'Bearer ' + KEY() }, extraHeaders || {}), body: body ? JSON.stringify(body) : undefined });
   let j = null; try { j = await r.json(); } catch (e) { /* empty */ }
   if (r.status === 401) { sessionStorage.removeItem('fsa-key'); showLogin(); const e = new Error('Wrong key'); e.status = r.status; throw e; }
   if (!r.ok) {
@@ -146,7 +146,7 @@ VIEWS.monitor = async () => {
   return el('div', null, el('h2', null, 'Monitor'), el('p', { class: 'sub' }, 'Real connection status. Nothing here is faked.'), el('p', { class: 'mu', 'data-refresh-error': true }), el('div', { 'data-monitor-mode': true }, modeBanner()),
     el('div', { class: 'grid g4', 'data-monitor-summary': true }, monitorStats(st)),
     el('div', { class: 'grid g2' }, el('div', { class: 'box' }, el('h3', null, 'Configuration'), chk(cf.app_id, 'APP_ID'), chk(cf.app_secret, 'APP_SECRET'), chk(cf.graph_version, 'GRAPH_VERSION'), chk(cf.base_url, 'BASE_URL (public https address)'), chk(cf.verify_token, 'VERIFY_TOKEN'), el('p', { class: 'mu' }, 'Access key source: ' + cf.admin_key_source)),
-      el('div', { class: 'box' }, el('h3', null, 'Facebook Pages'), st.pages.length ? st.pages.map(p => el('div', { class: 'row' }, el('b', null, p.name), badge(p.token_status, p.token_status === 'ok' ? 'g' : 'r'), btn('Test connection', async () => { const r = await api('POST', '/api/pages/' + p.id + '/test'); toast(r.ok ? 'Connected' : 'Failed: ' + r.error, !r.ok); render(); }, 'sm alt'))) : el('p', { class: 'mu' }, 'No Page connected. See Settings.'), el('p', { class: 'mu' }, 'Replies this hour: ' + st.caps.replies_last_hour + '/' + st.caps.limit_hour + ' · messages today: ' + st.caps.dms_today + '/' + st.caps.limit_day))),
+      el('div', { class: 'box' }, el('h3', null, 'Facebook Pages'), st.pages.length ? st.pages.map(p => el('div', { class: 'row' }, el('b', null, p.name), badge(p.token_status, p.token_status === 'ok' ? 'g' : 'r'), p.webhook_status === 'failed' ? badge('Webhook subscription failed', 'r') : null, btn('Test connection', async () => { const r = await api('POST', '/api/pages/' + p.id + '/test'); toast(r.ok ? 'Connected' : 'Failed: ' + r.error, !r.ok); render(); }, 'sm alt'), p.webhook_error ? el('small', { class: 'mu' }, p.webhook_error) : null)) : el('p', { class: 'mu' }, 'No Page connected. See Settings.'), el('p', { class: 'mu' }, 'Replies this hour: ' + st.caps.replies_last_hour + '/' + st.caps.limit_hour + ' · messages today: ' + st.caps.dms_today + '/' + st.caps.limit_day))),
     el('div', { class: 'box' }, el('h3', null, 'Failed sends (real errors from Facebook)'), el('table', { 'data-monitor-failed': true }, failedJobRows(st))),
     el('div', { class: 'box' }, el('h3', null, 'Waiting jobs'), el('table', { 'data-monitor-pending': true }, pendingJobRows(pending))),
     el('div', { class: 'box' }, el('h3', null, 'Database'), el('p', null, 'Version ' + st.db.version + ' · ' + Math.round(st.db.bytes / 1024) + ' KB · last backup: ' + (st.db.last_backup || 'none') + (st.db.recovered_from ? ' · recovered from ' + st.db.recovered_from : '')), btn('Back up now', async () => { const r = await api('POST', '/api/backup'); toast('Backup saved: ' + r.file); render(); }, 'alt')));
@@ -231,18 +231,20 @@ VIEWS.newpost = async () => {
   const uploadFiles = async (files) => {
     if (!files || !files.length) return;
     toast('Uploading ' + files.length + ' image(s)...');
+    const failed = [];
     for (const f of files) {
       try {
         const data = await resize(f);
         const r = await api('POST', '/api/upload-image', { data });
         if (r && r.file) imgs.push(r.file);
       } catch (err) {
-        toast('Failed to upload ' + f.name + ': ' + err.message, true);
+        failed.push(f.name + ': ' + err.message);
       }
     }
     renderThumbs();
     updatePreview();
-    toast('Images ready (' + imgs.length + ' total)');
+    if (failed.length) toast(imgs.length + ' image(s) ready; upload failed for ' + failed.join('; '), true);
+    else toast('Images ready (' + imgs.length + ' total)');
   };
 
   up.addEventListener('change', async () => {
@@ -263,6 +265,7 @@ VIEWS.newpost = async () => {
     style: 'display:none;position:fixed;inset:0;z-index:10000;background:rgba(15,23,42,.58);align-items:center;justify-content:center;padding:20px'
   }, el('div', { class: 'box', style: 'width:min(440px,100%);text-align:center;box-shadow:0 18px 60px rgba(0,0,0,.25)' }, popupContent));
   let publishButton;
+  const savedBatchId = sessionStorage.getItem('fsa-post-batch');
   let publishing = false, publishedSuccessfully = false;
   const showPublishPopup = (...content) => {
     popupContent.replaceChildren(...content);
@@ -284,6 +287,125 @@ VIEWS.newpost = async () => {
     imgs = [];
     renderThumbs();
     updatePreview();
+  };
+  const pollPostBatch = async batchId => {
+    postResultBox.style.display = 'block';
+    let batch;
+    try {
+      do {
+        batch = await api('GET', '/api/post-batches/' + encodeURIComponent(batchId));
+        if (batch.status === 'processing') {
+          showPublishPopup(
+            el('div', { style: 'font-size:34px;margin-bottom:8px' }, '⏳'),
+            el('h3', null, 'Publishing your posts…'),
+            el('progress', { style: 'width:100%;height:8px' }),
+            el('p', { class: 'mu' }, batch.sent + ' of ' + batch.total + ' posts published; ' + batch.pending + ' still processing. Do not submit this post again.')
+          );
+          await new Promise(resolve => setTimeout(resolve, 1500));
+        }
+      } while (batch.status === 'processing');
+    } catch (e) {
+      showPublishPopup(
+        el('h3', { style: 'color:var(--wn)' }, 'Post status could not be checked'),
+        el('p', { class: 'mu' }, e.message + ' Your request is saved; check again before submitting another post.'),
+        btn('Check status again', () => pollPostBatch(batchId), 'alt')
+      );
+      publishButton.disabled = true;
+      return;
+    }
+
+    const sent = batch.results.filter(x => x.result === 'sent');
+    const failed = batch.results.filter(x => x.status === 'failed');
+    const unknown = batch.results.filter(x => x.status === 'unknown');
+    const cancelled = batch.results.filter(x => x.status === 'cancelled');
+    const dry = batch.results.filter(x => x.result === 'dry_run');
+    const postLinks = sent.map(s => el('a', { href: 'https://facebook.com/' + (s.meta_id || ''), target: '_blank', rel: 'noopener noreferrer', class: 'button sm', style: 'padding:6px 12px;text-decoration:none;display:inline-block;background:var(--ok);color:#fff;border-radius:6px;font-weight:700' }, 'View ' + s.page_name + ' · image ' + s.image_index + '/' + s.image_count + ' ↗'));
+    const retryFailed = failed.length ? btn('Retry failed posts', async () => {
+      sessionStorage.setItem('fsa-post-batch', batchId);
+      await api('POST', '/api/post-batches/' + encodeURIComponent(batchId) + '/retry-failed', {});
+      await pollPostBatch(batchId);
+    }, 'sm alt') : null;
+    const reconnect = failed.some(x => /token expired|permission|oauth/i.test(x.error || '')) ? btn('Open Settings to Reconnect', () => { location.hash = 'settings'; }, 'sm alt') : null;
+    if (sent.length && !failed.length && !unknown.length && !cancelled.length) {
+      resetPostForm();
+      publishedSuccessfully = true;
+      publishButton.disabled = true;
+      sessionStorage.removeItem('fsa-post-batch');
+      sessionStorage.removeItem('fsa-post-request');
+      postResultBox.replaceChildren(el('h3', { style: 'color:var(--ok)' }, '✔ Published ' + sent.length + ' separate post(s) to Facebook Pages'), el('p', null, 'Each selected image was published as its own post with the same title, location, and caption.'), el('div', { class: 'row' }, ...postLinks));
+      showPublishPopup(el('div', { style: 'font-size:34px;margin-bottom:8px;color:var(--ok)' }, '✔'), el('h3', { style: 'color:var(--ok)' }, 'Post published successfully!'), el('p', null, sent.length + ' separate post(s) were published to your selected Facebook Pages. The form has been cleared to prevent accidental reposting.'), btn('Done', closePublishPopup));
+      toast('All ' + sent.length + ' Page posts published successfully.');
+      return;
+    }
+    if (dry.length && !sent.length && !failed.length && !unknown.length && !cancelled.length) {
+      publishButton.disabled = false;
+      postResultBox.replaceChildren(el('h3', { style: 'color:var(--wn)' }, '🟡 Recorded in Dry-Run Mode (Test only)'), el('p', { class: 'mu' }, 'The post was saved and simulated, but nothing was sent to Facebook.'));
+      showPublishPopup(el('h3', { style: 'color:var(--wn)' }, 'Dry-Run: not published'), el('p', null, 'Switch to Live mode to publish this post to Facebook.'), btn('Done', closePublishPopup));
+      toast('Recorded in Dry-run mode.');
+      sessionStorage.removeItem('fsa-post-batch');
+      sessionStorage.removeItem('fsa-post-request');
+      return;
+    }
+
+    const needsReview = !!(sent.length || unknown.length);
+    publishedSuccessfully = needsReview;
+    publishButton.disabled = needsReview;
+    postResultBox.replaceChildren(
+      el('h3', { style: 'color:var(--er)' }, unknown.length ? '⚠ Facebook could not confirm every post' : sent.length ? '⚠ Some Facebook Page posts failed' : '✖ Facebook Page error'),
+      el('p', { class: 'mu' }, sent.length + ' published, ' + failed.length + ' failed, ' + unknown.length + ' uncertain, ' + cancelled.length + ' cancelled.'),
+      ...failed.map(x => el('p', { class: 'mu' }, x.page_name + ' · image ' + x.image_index + '/' + x.image_count + ': ' + x.error)),
+      ...unknown.map(x => el('p', { class: 'mu' }, x.page_name + ' · image ' + x.image_index + '/' + x.image_count + ': ' + x.error)),
+      ...cancelled.map(x => el('p', { class: 'mu' }, x.page_name + ' · image ' + x.image_index + '/' + x.image_count + ': cancelled')),
+      postLinks.length ? el('div', { class: 'row' }, ...postLinks) : null,
+      reconnect
+    );
+    showPublishPopup(
+      el('h3', { style: 'color:var(--wn)' }, unknown.length ? 'Check Facebook before retrying' : 'Some posts need attention'),
+      el('p', null, unknown.length ? 'Facebook did not confirm whether ' + unknown.length + ' post(s) were published. Check the Page before trying again to avoid duplicates.' : sent.length ? sent.length + ' post(s) published; ' + failed.length + ' failed and ' + cancelled.length + ' cancelled. Successful posts are protected from accidental reposting.' : failed.length + ' post(s) failed and ' + cancelled.length + ' were cancelled.'),
+      ...failed.map(x => el('p', { class: 'mu' }, x.page_name + ' · image ' + x.image_index + '/' + x.image_count + ': ' + x.error)),
+      ...unknown.map(x => el('p', { class: 'mu' }, x.page_name + ' · image ' + x.image_index + '/' + x.image_count + ': ' + x.error)),
+      retryFailed,
+      reconnect,
+      btn('Close', closePublishPopup, 'alt')
+    );
+    if (failed.length) toast('Some Page posts failed; review the results before continuing.', true);
+    if (!needsReview) {
+      sessionStorage.removeItem('fsa-post-batch');
+      sessionStorage.removeItem('fsa-post-request');
+    }
+  };
+  const sendPostRequest = async (payload, key) => {
+    if (publishing) return;
+    publishing = true;
+    publishButton.disabled = true;
+    showPublishPopup(el('div', { style: 'font-size:34px;margin-bottom:8px' }, '⏳'), el('h3', null, 'Starting your post batch…'), el('progress', { style: 'width:100%;height:8px' }), el('p', { class: 'mu' }, 'The request uses a saved idempotency key, so retrying will not create a second batch.'));
+    try {
+      const response = await api('POST', '/api/posts/publish', payload, { 'Idempotency-Key': key });
+      if (!response.batch_id) {
+        publishButton.disabled = false;
+        sessionStorage.removeItem('fsa-post-request');
+        closePublishPopup();
+        toast('No Page posts were queued.', true);
+        return;
+      }
+      sessionStorage.setItem('fsa-post-request', JSON.stringify({ fingerprint: JSON.stringify(payload), key, payload, pending: false }));
+      sessionStorage.setItem('fsa-post-batch', response.batch_id);
+      await pollPostBatch(response.batch_id);
+    } catch (e) {
+      if (e.status && e.status >= 400 && e.status < 500 && e.status !== 401 && e.status !== 409) {
+        sessionStorage.removeItem('fsa-post-request');
+        publishButton.disabled = false;
+        closePublishPopup();
+        throw e;
+      }
+      showPublishPopup(
+        el('h3', { style: 'color:var(--wn)' }, 'Post request could not be confirmed'),
+        el('p', { class: 'mu' }, e.message + ' Retry this exact request safely before changing the post.'),
+        btn('Retry safely', () => sendPostRequest(payload, key), 'alt')
+      );
+    } finally {
+      publishing = false;
+    }
   };
 
   const updatePreview = () => {
@@ -333,7 +455,7 @@ VIEWS.newpost = async () => {
     el('div', null,
       el('b', null, 'Current Mode: '),
       s.live ? el('span', { class: 'badge r' }, '🔴 LIVE MODE (Posts to Real Facebook)') : el('span', { class: 'badge o' }, '🟡 DRY-RUN MODE (Test only - not published to FB)'),
-      el('div', { class: 'mu', style: 'font-size:12.5px;margin-top:2px' }, s.live ? 'Real posts are published immediately on your connected Facebook Pages.' : 'Posts are recorded for review. Switch to Live mode to publish on real Facebook.')
+      el('div', { class: 'mu', style: 'font-size:12.5px;margin-top:2px' }, s.live ? 'Posts are queued immediately and published by the local worker or hosted scheduler.' : 'Posts are recorded for review. Switch to Live mode to publish on real Facebook.')
     ),
     btn(s.live ? 'Switch to Dry-Run' : 'Go Live on Facebook', async () => {
       const next = !s.live;
@@ -344,9 +466,9 @@ VIEWS.newpost = async () => {
     }, s.live ? 'sm alt' : 'sm bad')
   );
 
-  return el('div', null,
+  const newPostView = el('div', null,
     el('h2', null, 'New Post'),
-    el('p', { class: 'sub' }, 'Publish posts immediately to your connected Facebook Pages. Each selected image is published as a separate post.'),
+    el('p', { class: 'sub' }, 'Queue posts for your connected Facebook Pages. Each selected image is published as a separate post by the worker.'),
     modeBar,
     el('div', { class: 'box' },
       el('h3', null, '1. Post Details'),
@@ -406,109 +528,37 @@ VIEWS.newpost = async () => {
           if (loc.value.trim()) fullCaption += '📍 Location: ' + loc.value.trim() + '\n\n';
           fullCaption += cap.value.trim();
 
-          publishing = true;
-          publishButton.disabled = true;
-          showPublishPopup(
-            el('div', { style: 'font-size:34px;margin-bottom:8px' }, '⏳'),
-            el('h3', null, 'Publishing your post…'),
-            el('progress', { style: 'width:100%;height:8px' }),
-            el('p', { class: 'mu' }, 'Please wait while Facebook processes the selected images and Pages. Do not close this page or click Publish again.')
-          );
+          const payload = {
+            page_ids: selectedPages,
+            product_ids: pr.value ? [pr.value] : [],
+            title: title.value.trim(),
+            location: loc.value.trim(),
+            images: imgs,
+            caption: fullCaption || title.value.trim() || 'New Post',
+            confirm: true,
+            require_image: true
+          };
+          const fingerprint = JSON.stringify(payload);
+          const savedRequest = JSON.parse(sessionStorage.getItem('fsa-post-request') || 'null');
+          const key = savedRequest && savedRequest.fingerprint === fingerprint ? savedRequest.key : (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + '-' + Math.random().toString(36).slice(2));
+          sessionStorage.setItem('fsa-post-request', JSON.stringify({ fingerprint, key, payload, pending: true }));
           await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-
-          let r;
-          try {
-            r = await api('POST', '/api/posts/publish', {
-              page_ids: selectedPages,
-              product_ids: pr.value ? [pr.value] : [],
-              title: title.value.trim(),
-              location: loc.value.trim(),
-              images: imgs,
-              caption: fullCaption || title.value.trim() || 'New Post',
-              confirm: true,
-              require_image: true
-            });
-          } catch (e) {
-            closePublishPopup();
-            publishButton.disabled = false;
-            throw e;
-          } finally {
-            publishing = false;
-          }
-
-          postResultBox.style.display = 'block';
-
-          if (r.executed_immediately) {
-            const failed = r.results.filter(x => x.status === 'failed');
-            const sent = r.results.filter(x => x.result === 'sent');
-            const dry = r.results.filter(x => x.result === 'dry_run');
-            const postLinks = sent.map(s => {
-              const postUrl = 'https://facebook.com/' + (s.meta_id || '');
-              return el('a', { href: postUrl, target: '_blank', rel: 'noopener noreferrer', class: 'button sm', style: 'padding:6px 12px;text-decoration:none;display:inline-block;background:var(--ok);color:#fff;border-radius:6px;font-weight:700' }, 'View ' + s.page_name + ' · image ' + s.image_index + '/' + s.image_count + ' ↗');
-            });
-
-            if (failed.length) {
-              postResultBox.replaceChildren(
-                el('h3', { style: 'color:var(--er)' }, sent.length ? '⚠ Some Facebook Page posts failed' : '✖ Facebook Page error'),
-                el('p', { class: 'mu' }, 'Meta could not publish ' + failed.length + ' Page post(s):'),
-                ...failed.map(x => el('p', { class: 'mu' }, x.page_name + ' · image ' + x.image_index + '/' + x.image_count + ': ' + x.error)),
-                postLinks.length ? el('div', { class: 'row' }, ...postLinks) : null,
-                failed.some(x => /token expired|permission|oauth/i.test(x.error || '')) ? el('div', { class: 'row' }, btn('Open Settings to Reconnect', () => { location.hash = 'settings'; }, 'sm alt')) : null
-              );
-              toast(sent.length ? 'Some Page posts failed; successful posts are listed below.' : 'Facebook Page post failed: ' + failed[0].error, true);
-              if (sent.length) {
-                publishedSuccessfully = true;
-                publishButton.disabled = true;
-                showPublishPopup(
-                  el('h3', { style: 'color:var(--wn)' }, 'Some posts published; some failed'),
-                  el('p', null, sent.length + ' post(s) were published and ' + failed.length + ' failed. The form is locked to prevent accidental duplicate posts.'),
-                  btn('Close', closePublishPopup, 'alt')
-                );
-              } else {
-                publishButton.disabled = false;
-              }
-            } else if (sent.length) {
-              resetPostForm();
-              publishedSuccessfully = true;
-              publishButton.disabled = true;
-              postResultBox.replaceChildren(
-                el('h3', { style: 'color:var(--ok)' }, '✔ Published ' + sent.length + ' separate post(s) to Facebook Pages'),
-                el('p', null, 'Each selected image was published as its own immediate Page post with the same caption.'),
-                el('div', { class: 'row' }, ...postLinks)
-              );
-              showPublishPopup(
-                el('div', { style: 'font-size:34px;margin-bottom:8px;color:var(--ok)' }, '✔'),
-                el('h3', { style: 'color:var(--ok)' }, 'Post published successfully!'),
-                el('p', null, sent.length + ' separate post(s) were published to your selected Facebook Pages. The form has been cleared to prevent accidental reposting.'),
-                btn('Done', closePublishPopup)
-              );
-            } else if (dry.length) {
-              publishButton.disabled = false;
-              postResultBox.replaceChildren(
-                el('h3', { style: 'color:var(--wn)' }, '🟡 Recorded in Dry-Run Mode (Test only)'),
-                el('p', { class: 'mu' }, 'The post was saved and simulated, but nothing was sent to Facebook because the software is in Dry-Run mode.'),
-                el('p', null, 'To publish real posts to Facebook, click "Go Live on Facebook" above or in Auto-Pilot.'),
-                el('div', { class: 'row' },
-                  btn('Switch to Live Mode Now', async () => {
-                    await api('PUT', '/api/settings', { live: true, confirm_live: true });
-                    await refreshCache();
-                    render();
-                  }, 'sm bad')
-                )
-              );
-              toast('Recorded in Dry-run mode.');
-            } else {
-              publishButton.disabled = false;
-              toast('Post request completed without a result.', true);
-            }
-          } else {
-            publishButton.disabled = false;
-            toast('Post request completed without a result.', true);
-          }
+          await sendPostRequest(payload, key);
         })
       )
     )
   );
+  if (savedBatchId) {
+    publishButton.disabled = true;
+    setTimeout(() => pollPostBatch(savedBatchId), 0);
+  } else {
+    const savedRequest = JSON.parse(sessionStorage.getItem('fsa-post-request') || 'null');
+    if (savedRequest && savedRequest.pending && savedRequest.payload) {
+      publishButton.disabled = true;
+      setTimeout(() => sendPostRequest(savedRequest.payload, savedRequest.key), 0);
+    }
+  }
+  return newPostView;
 };
 // ---------------- Business
 VIEWS.business = async () => {
@@ -557,7 +607,7 @@ VIEWS.orders = async () => {
 VIEWS.settings = async () => {
   const st = await api('GET', '/api/status'), bk = await api('GET', '/api/backups'), cats = inp(cache.settings.categories.join(', ')), imp = area('', { placeholder: 'Paste the text you copied with "Copy backup" from the old Page Desk' });
   return el('div', null, el('h2', null, 'Settings'), el('p', { class: 'sub' }, 'Facebook connection, categories, backups and importing your old data.'),
-    el('div', { class: 'box' }, el('h3', null, 'Facebook'), st.pages.length ? st.pages.map(p => el('div', { class: 'row' }, el('b', null, p.name), badge(p.token_status, p.token_status === 'ok' ? 'g' : 'r'), btn('Disconnect', async () => { if (confirm('Disconnect ' + p.name + '?')) { await api('DELETE', '/api/pages/' + p.id); render(); } }, 'sm alt'))) : el('p', { class: 'mu' }, 'No Page connected.'), btn('Connect / reconnect Facebook Pages', async () => { const r = await api('GET', '/api/facebook/login-url'); location.href = r.url; }), el('p', { class: 'mu' }, 'You log in on Facebook itself. The assistant never sees your password.')),
+    el('div', { class: 'box' }, el('h3', null, 'Facebook'), st.pages.length ? st.pages.map(p => el('div', { class: 'row' }, el('b', null, p.name), badge(p.token_status, p.token_status === 'ok' ? 'g' : 'r'), p.webhook_status === 'failed' ? badge('Webhook subscription failed', 'r') : null, btn('Disconnect', async () => { if (confirm('Disconnect ' + p.name + '?')) { await api('DELETE', '/api/pages/' + p.id); render(); } }, 'sm alt'), p.webhook_error ? el('small', { class: 'mu' }, p.webhook_error) : null)) : el('p', { class: 'mu' }, 'No Page connected.'), btn('Connect / reconnect Facebook Pages', async () => { const r = await api('GET', '/api/facebook/login-url'); location.href = r.url; }), el('p', { class: 'mu' }, 'You log in on Facebook itself. The assistant never sees your password.')),
     el('div', { class: 'box' }, el('h3', null, 'Furniture categories'), field('Comma separated', cats), btn('Save', async () => { await api('PUT', '/api/settings', { categories: cats.value }); await refreshCache(); toast('Saved'); }, 'alt')),
     el('div', { class: 'box' }, el('h3', null, 'Backups'), el('p', { class: 'mu' }, 'Saved automatically every hour in data/backups (last 30 kept). Latest: ' + (bk[0] || 'none')), btn('Back up now', async () => { const r = await api('POST', '/api/backup'); toast('Saved ' + r.file); render(); }, 'alt')),
     el('div', { class: 'box' }, el('h3', null, 'Import from the old Page Desk'), el('p', { class: 'mu' }, 'Imports furniture products, leads and orders. Generators, pressure washers and tools are skipped.'), imp, btn('Import', async () => { const r = await api('POST', '/api/import/legacy', { json: imp.value }); toast('Imported ' + r.products + ' products, ' + r.leads + ' leads, ' + r.orders + ' orders'); render(); }, 'alt')));
