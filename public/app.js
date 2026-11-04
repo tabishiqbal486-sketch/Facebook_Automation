@@ -212,7 +212,7 @@ VIEWS.newpost = async () => {
       )
     ] : el('p', { class: 'mu' }, 'No Facebook Page connected yet. Connect a Page in Settings to publish live.')
   );
-  pageChecks.forEach(pc => pc.input.addEventListener('change', () => updatePreview()));
+  pageChecks.forEach(pc => pc.input.addEventListener('change', () => { startNewPost(); updatePreview(); }));
 
   const renderThumbs = () => {
     thumbsBox.replaceChildren(
@@ -222,7 +222,7 @@ VIEWS.newpost = async () => {
           type: 'button',
           class: 'bad sm',
           style: 'position:absolute;top:2px;right:2px;padding:1px 6px;line-height:1.2;font-size:11px',
-          onclick: () => { imgs.splice(idx, 1); renderThumbs(); updatePreview(); }
+          onclick: () => { startNewPost(); imgs.splice(idx, 1); renderThumbs(); updatePreview(); }
         }, '✕')
       ))
     );
@@ -246,6 +246,7 @@ VIEWS.newpost = async () => {
   };
 
   up.addEventListener('change', async () => {
+    startNewPost();
     if (up.files && up.files.length) {
       await uploadFiles(up.files);
       up.value = '';
@@ -254,7 +255,36 @@ VIEWS.newpost = async () => {
 
   const prev = el('div', { class: 'box' });
   const postResultBox = el('div', { class: 'box', style: 'display:none;background:var(--bg)' });
+  const popupContent = el('div');
+  const publishPopup = el('div', {
+    role: 'dialog',
+    'aria-modal': 'true',
+    'aria-live': 'assertive',
+    style: 'display:none;position:fixed;inset:0;z-index:10000;background:rgba(15,23,42,.58);align-items:center;justify-content:center;padding:20px'
+  }, el('div', { class: 'box', style: 'width:min(440px,100%);text-align:center;box-shadow:0 18px 60px rgba(0,0,0,.25)' }, popupContent));
   let publishButton;
+  let publishing = false, publishedSuccessfully = false;
+  const showPublishPopup = (...content) => {
+    popupContent.replaceChildren(...content);
+    publishPopup.style.display = 'flex';
+  };
+  const closePublishPopup = () => { publishPopup.style.display = 'none'; };
+  const startNewPost = () => {
+    if (!publishedSuccessfully) return;
+    publishedSuccessfully = false;
+    publishButton.disabled = false;
+  };
+  const resetPostForm = () => {
+    title.value = '';
+    loc.value = '';
+    cap.value = '';
+    pr.value = '';
+    up.value = '';
+    ok.checked = false;
+    imgs = [];
+    renderThumbs();
+    updatePreview();
+  };
 
   const updatePreview = () => {
     const selectedPages = pageChecks.filter(x => x.input.checked).map(x => x.name);
@@ -280,6 +310,7 @@ VIEWS.newpost = async () => {
   const draftFromProduct = async () => {
     if (!pr.value) return toast('Select a catalogue product first', true);
     const d = await api('POST', '/api/posts/draft', { product_id: pr.value });
+    startNewPost();
     const product = cache.products.find(p => p.id === pr.value);
     if (product) title.value = product.name;
     cap.value = d.caption;
@@ -291,7 +322,8 @@ VIEWS.newpost = async () => {
     toast('Drafted from ' + (product ? product.name : 'product'));
   };
 
-  [title, loc, cap].forEach(input => input.addEventListener('input', updatePreview));
+  [title, loc, cap].forEach(input => input.addEventListener('input', () => { startNewPost(); updatePreview(); }));
+  pr.addEventListener('change', startNewPost);
 
   renderThumbs();
   updatePreview();
@@ -348,10 +380,12 @@ VIEWS.newpost = async () => {
     ),
     prev,
     postResultBox,
+    publishPopup,
     el('div', { class: 'box' },
       el('label', { style: 'display:flex;gap:8px;align-items:center' }, ok, 'I have checked the preview and want to publish this post'),
       el('div', { class: 'row' },
         publishButton = btn('Publish Post', async () => {
+          if (publishing || publishedSuccessfully) return;
           if (!imgs.length) {
             toast('Please upload at least one image for the post.', true);
             up.focus();
@@ -372,19 +406,35 @@ VIEWS.newpost = async () => {
           if (loc.value.trim()) fullCaption += '📍 Location: ' + loc.value.trim() + '\n\n';
           fullCaption += cap.value.trim();
 
-          toast('Publishing post...', false);
-
+          publishing = true;
           publishButton.disabled = true;
-          const r = await api('POST', '/api/posts/publish', {
-            page_ids: selectedPages,
-            product_ids: pr.value ? [pr.value] : [],
-            title: title.value.trim(),
-            location: loc.value.trim(),
-            images: imgs,
-            caption: fullCaption || title.value.trim() || 'New Post',
-            confirm: true,
-            require_image: true
-          }).finally(() => { publishButton.disabled = false; });
+          showPublishPopup(
+            el('div', { style: 'font-size:34px;margin-bottom:8px' }, '⏳'),
+            el('h3', null, 'Publishing your post…'),
+            el('progress', { style: 'width:100%;height:8px' }),
+            el('p', { class: 'mu' }, 'Please wait while Facebook processes the selected images and Pages. Do not close this page or click Publish again.')
+          );
+          await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+          let r;
+          try {
+            r = await api('POST', '/api/posts/publish', {
+              page_ids: selectedPages,
+              product_ids: pr.value ? [pr.value] : [],
+              title: title.value.trim(),
+              location: loc.value.trim(),
+              images: imgs,
+              caption: fullCaption || title.value.trim() || 'New Post',
+              confirm: true,
+              require_image: true
+            });
+          } catch (e) {
+            closePublishPopup();
+            publishButton.disabled = false;
+            throw e;
+          } finally {
+            publishing = false;
+          }
 
           postResultBox.style.display = 'block';
 
@@ -406,14 +456,34 @@ VIEWS.newpost = async () => {
                 failed.some(x => /token expired|permission|oauth/i.test(x.error || '')) ? el('div', { class: 'row' }, btn('Open Settings to Reconnect', () => { location.hash = 'settings'; }, 'sm alt')) : null
               );
               toast(sent.length ? 'Some Page posts failed; successful posts are listed below.' : 'Facebook Page post failed: ' + failed[0].error, true);
+              if (sent.length) {
+                publishedSuccessfully = true;
+                publishButton.disabled = true;
+                showPublishPopup(
+                  el('h3', { style: 'color:var(--wn)' }, 'Some posts published; some failed'),
+                  el('p', null, sent.length + ' post(s) were published and ' + failed.length + ' failed. The form is locked to prevent accidental duplicate posts.'),
+                  btn('Close', closePublishPopup, 'alt')
+                );
+              } else {
+                publishButton.disabled = false;
+              }
             } else if (sent.length) {
+              resetPostForm();
+              publishedSuccessfully = true;
+              publishButton.disabled = true;
               postResultBox.replaceChildren(
                 el('h3', { style: 'color:var(--ok)' }, '✔ Published ' + sent.length + ' separate post(s) to Facebook Pages'),
                 el('p', null, 'Each selected image was published as its own immediate Page post with the same caption.'),
                 el('div', { class: 'row' }, ...postLinks)
               );
-              toast('Post is live on Facebook!');
+              showPublishPopup(
+                el('div', { style: 'font-size:34px;margin-bottom:8px;color:var(--ok)' }, '✔'),
+                el('h3', { style: 'color:var(--ok)' }, 'Post published successfully!'),
+                el('p', null, sent.length + ' separate post(s) were published to your selected Facebook Pages. The form has been cleared to prevent accidental reposting.'),
+                btn('Done', closePublishPopup)
+              );
             } else if (dry.length) {
+              publishButton.disabled = false;
               postResultBox.replaceChildren(
                 el('h3', { style: 'color:var(--wn)' }, '🟡 Recorded in Dry-Run Mode (Test only)'),
                 el('p', { class: 'mu' }, 'The post was saved and simulated, but nothing was sent to Facebook because the software is in Dry-Run mode.'),
@@ -428,9 +498,11 @@ VIEWS.newpost = async () => {
               );
               toast('Recorded in Dry-run mode.');
             } else {
+              publishButton.disabled = false;
               toast('Post request completed without a result.', true);
             }
           } else {
+            publishButton.disabled = false;
             toast('Post request completed without a result.', true);
           }
         })
