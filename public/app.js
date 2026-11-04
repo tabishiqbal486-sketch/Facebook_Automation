@@ -24,7 +24,7 @@ const badge = (t, c) => el('span', { class: 'badge ' + (c || '') }, t);
 const stat = (n, l, c) => el('div', { class: 'stat' }, el('b', { class: c || '' }, n), el('span', { class: 'mu' }, l));
 const copy = async t => { try { await navigator.clipboard.writeText(t); toast('Copied'); } catch (e) { toast('Could not copy', true); } };
 const lines = s => String(s || '').split('\n').map(x => x.trim()).filter(Boolean);
-const TABS = [['dashboard', 'Dashboard'], ['needs', 'Needs me'], ['chat', 'Chat'], ['monitor', 'Monitor'], ['autopilot', 'Auto-Pilot'], ['skills', 'Skills & Log'], ['newpost', 'New Post'], ['business', 'Business'], ['catalogue', 'Catalogue'], ['reviews', 'Reviews'], ['leads', 'Leads'], ['orders', 'Orders'], ['groups', 'Groups'], ['settings', 'Settings'], ['history', 'History']];
+const TABS = [['dashboard', 'Dashboard'], ['needs', 'Needs me'], ['chat', 'Chat'], ['monitor', 'Monitor'], ['autopilot', 'Auto-Pilot'], ['skills', 'Skills & Log'], ['newpost', 'New Post'], ['business', 'Business'], ['catalogue', 'Catalogue'], ['reviews', 'Reviews'], ['leads', 'Leads'], ['orders', 'Orders'], ['settings', 'Settings'], ['history', 'History']];
 const STAGES = [['new_enquiry', 'New enquiry'], ['interested', 'Interested'], ['price_quoted', 'Price quoted'], ['awaiting_response', 'Awaiting response'], ['follow_up_required', 'Follow-up required'], ['order_confirmed', 'Order confirmed'], ['won', 'Won'], ['lost', 'Lost']];
 let cache = { products: [], settings: null, openQ: 0 };
 async function refreshCache() {
@@ -32,15 +32,66 @@ async function refreshCache() {
   cache = { products: data.products, settings: data.settings, openQ: data.open_questions };
 }
 function drawNav(cur) { const n = document.getElementById('nav'); n.replaceChildren(el('h1', null, 'Furniture Sales Assistant'), ...TABS.map(([k, l]) => el('a', { class: k === cur ? 'on' : '', onclick: () => { location.hash = k; } }, l, k === 'needs' && cache.openQ ? el('span', { class: 'badge r' }, cache.openQ) : null))); }
+function updateNeedsBadge() {
+  const link = [...document.querySelectorAll('#nav a')].find(a => a.textContent.startsWith('Needs me'));
+  if (!link) return;
+  const existing = link.querySelector('.badge');
+  if (cache.openQ && !existing) link.append(el('span', { class: 'badge r' }, cache.openQ));
+  else if (cache.openQ && existing) existing.textContent = cache.openQ;
+  else if (existing) existing.remove();
+}
 function modeBanner() { const s = cache.settings; return el('div', { class: 'banner ' + (s.live ? 'live' : 'dry') }, s.live ? 'LIVE MODE: replies are sent to real customers on Facebook.' : 'DRY-RUN MODE: nothing is sent to customers. Replies are only recorded. Switch to Live in Auto-Pilot when you are ready.', s.autopilot !== 'on' ? '  Auto-Pilot is ' + s.autopilot + '.' : ''); }
 const VIEWS = {};
+const dashboardStats = d => [
+  stat(d.open_questions, 'Questions for me', d.open_questions ? 'wn' : ''),
+  stat(d.orders_to_review, 'New order requests'),
+  stat(d.new_enquiries, 'New enquiries'),
+  stat(d.messages_in_today, 'Messages today'),
+  stat(d.comments_today, 'Comments today'),
+  stat(d.replies_sent_today, 'Replies sent today'),
+  stat(d.replies_dry_today, 'Recorded (not sent)'),
+  stat(d.failed_jobs, 'Failed sends', d.failed_jobs ? 'er' : ''),
+  stat(d.followups_manual, 'Follow-ups to send myself'),
+  stat(d.customers, 'Customers'),
+  stat(d.products, 'Products'),
+  stat(d.orders.confirmed + d.orders.dispatched, 'Orders in progress')
+];
+const recentRows = recent => recent.length
+  ? recent.map(l => el('tr', null, el('td', { class: 'mu' }, fmt(l.ts)), el('td', null, badge(l.kind)), el('td', null, l.text)))
+  : [el('tr', null, el('td', { colspan: 3, class: 'mu' }, 'No recent activity.'))];
+const monitorStats = st => [
+  stat(st.jobs.pending, 'Waiting to send'),
+  stat(st.jobs.done, 'Done'),
+  stat(st.jobs.failed, 'Failed', st.jobs.failed ? 'er' : ''),
+  stat(st.last_event_at ? fmt(st.last_event_at) : 'never', 'Last Facebook event')
+];
+const failedJobRows = st => st.failed.length
+  ? [el('tr', null, ['Customer', 'What', 'Error', ''].map(x => el('th', null, x))), ...st.failed.map(f => el('tr', null,
+    el('td', null, f.customer || '-'),
+    el('td', null, f.type + ': ' + f.text),
+    el('td', { class: 'er' }, f.error),
+    el('td', null, el('div', { class: 'row', style: 'margin:0' },
+      btn('Retry', async () => { await api('POST', '/api/jobs/' + f.id + '/retry'); toast('Retrying'); render(); }, 'sm'),
+      f.text ? btn('Copy text', () => copy(f.text), 'sm alt') : null
+    ))
+  ))]
+  : [el('tr', null, el('td', { colspan: 4, class: 'mu' }, 'No failed sends.'))];
+const pendingJobRows = pending => pending.length
+  ? pending.slice(0, 30).map(j => el('tr', null,
+    el('td', null, fmt(j.due_at)),
+    el('td', null, j.type + (j.origin === 'auto' ? '' : ' (you)')),
+    el('td', null, (j.payload.text || j.payload.file || '').slice(0, 80)),
+    el('td', { class: 'mu' }, j.note || ''),
+    el('td', null, btn('Cancel', async () => { await api('POST', '/api/jobs/' + j.id + '/cancel'); render(); }, 'sm alt'))
+  ))
+  : [el('tr', null, el('td', { colspan: 5, class: 'mu' }, 'Nothing waiting.'))];
 // ---------------- Dashboard
 VIEWS.dashboard = async () => {
   const [d, st] = await Promise.all([api('GET', '/api/dashboard'), api('GET', '/api/status')]);
-  return el('div', null, el('div', { class: 'welcome-header', style: 'font-size:18px;font-weight:700;margin-bottom:8px;color:var(--ac)' }, 'Welcome, ' + (localStorage.getItem('username') || 'Tabish')), el('h2', null, 'Dashboard'), el('p', { class: 'sub' }, 'What needs attention right now.'), modeBanner(),
-    el('div', { class: 'grid g4' }, stat(d.open_questions, 'Questions for me', d.open_questions ? 'wn' : ''), stat(d.orders_to_review, 'New order requests'), stat(d.new_enquiries, 'New enquiries'), stat(d.messages_in_today, 'Messages today'), stat(d.comments_today, 'Comments today'), stat(d.replies_sent_today, 'Replies sent today'), stat(d.replies_dry_today, 'Recorded (not sent)'), stat(d.failed_jobs, 'Failed sends', d.failed_jobs ? 'er' : ''), stat(d.followups_manual, 'Follow-ups to send myself'), stat(d.customers, 'Customers'), stat(d.products, 'Products'), stat(d.orders.confirmed + d.orders.dispatched, 'Orders in progress')),
-    !st.meta_ready ? el('div', { class: 'box' }, el('h3', null, 'Facebook is not connected yet'), el('p', { class: 'mu' }, 'The assistant works in test mode. To receive real comments and messages, follow SETUP-META.md and use Settings.')) : null,
-    el('div', { class: 'box' }, el('h3', null, 'Recent activity'), el('table', null, d.recent.map(l => el('tr', null, el('td', { class: 'mu' }, fmt(l.ts)), el('td', null, badge(l.kind)), el('td', null, l.text))))));
+  return el('div', null, el('div', { class: 'welcome-header', style: 'font-size:18px;font-weight:700;margin-bottom:8px;color:var(--ac)' }, 'Welcome, ' + (localStorage.getItem('username') || 'Tabish')), el('h2', null, 'Dashboard'), el('p', { class: 'sub' }, 'What needs attention right now.'), el('div', { 'data-dashboard-mode': true }, modeBanner()),
+    el('div', { class: 'grid g4', 'data-dashboard-metrics': true }, dashboardStats(d)),
+    el('div', { class: st.meta_ready ? '' : 'box', 'data-dashboard-connection': true }, !st.meta_ready ? [el('h3', null, 'Facebook is not connected yet'), el('p', { class: 'mu' }, 'The assistant works in test mode. To receive real comments and messages, follow SETUP-META.md and use Settings.')] : null),
+    el('div', { class: 'box' }, el('h3', null, 'Recent activity'), el('p', { class: 'mu', 'data-refresh-error': true }), el('table', { 'data-dashboard-recent': true }, recentRows(d.recent))));
 };
 // ---------------- Needs me
 VIEWS.needs = async () => {
@@ -58,7 +109,7 @@ VIEWS.needs = async () => {
       el('div', { class: 'ctx' }, el('label', { style: 'display:flex;gap:8px;align-items:center' }, keep, 'Save my answer as approved knowledge (used for similar messages in future)'), el('div', { class: 'grid g3' }, field('Match these words', kws), field('Use it for', scope), field('Type', kind)), el('label', { style: 'display:flex;gap:8px;align-items:center' }, mapPost, 'Also remember that this Facebook post is about the chosen product')),
       el('div', { class: 'row' }, btn('Send and save', async () => { const body = { reply_text: reply.value, product_id: prod.value || undefined, map_post: mapPost.checked }; if (keep.checked) body.remember = { save: true, keywords: kws.value.split(',').map(x => x.trim()).filter(Boolean), scope: scope.value, kind: kind.value }; if (!body.reply_text.trim() && !body.product_id) throw new Error('Write a reply or choose the product'); const r = await api('POST', '/api/questions/' + q.id + '/answer', body); toast(r.knowledge ? 'Done. I will remember this.' : 'Done'); render(); }), btn('Dismiss', async () => { await api('POST', '/api/questions/' + q.id + '/dismiss'); render(); }, 'alt')));
   };
-  return el('div', null, el('h2', null, 'Needs me'), el('p', { class: 'sub' }, 'Messages the assistant would not guess about. Answer once and it remembers.'), qs.length ? qs.map(card) : el('div', { class: 'box' }, 'Nothing needs your help right now. 🎉'));
+  return el('div', null, el('h2', null, 'Needs me'), el('p', { class: 'sub' }, 'Messages the assistant would not guess about. Answer once and it remembers.'), el('p', { class: 'mu', 'data-refresh-error': true }), qs.length ? qs.map(card) : el('div', { class: 'box' }, 'Nothing needs your help right now. 🎉'));
 };
 // ---------------- Chat
 let chatSel = null;
@@ -92,12 +143,12 @@ VIEWS.chat = async () => {
 VIEWS.monitor = async () => {
   const st = await api('GET', '/api/status'), pending = await api('GET', '/api/jobs?status=pending'), cf = st.config;
   const chk = (ok, l) => el('div', null, ok ? el('span', { class: 'ok' }, '✔ ') : el('span', { class: 'er' }, '✖ '), l);
-  return el('div', null, el('h2', null, 'Monitor'), el('p', { class: 'sub' }, 'Real connection status. Nothing here is faked.'), modeBanner(),
-    el('div', { class: 'grid g4' }, stat(st.jobs.pending, 'Waiting to send'), stat(st.jobs.done, 'Done'), stat(st.jobs.failed, 'Failed', st.jobs.failed ? 'er' : ''), stat(st.last_event_at ? fmt(st.last_event_at) : 'never', 'Last Facebook event')),
+  return el('div', null, el('h2', null, 'Monitor'), el('p', { class: 'sub' }, 'Real connection status. Nothing here is faked.'), el('p', { class: 'mu', 'data-refresh-error': true }), el('div', { 'data-monitor-mode': true }, modeBanner()),
+    el('div', { class: 'grid g4', 'data-monitor-summary': true }, monitorStats(st)),
     el('div', { class: 'grid g2' }, el('div', { class: 'box' }, el('h3', null, 'Configuration'), chk(cf.app_id, 'APP_ID'), chk(cf.app_secret, 'APP_SECRET'), chk(cf.graph_version, 'GRAPH_VERSION'), chk(cf.base_url, 'BASE_URL (public https address)'), chk(cf.verify_token, 'VERIFY_TOKEN'), el('p', { class: 'mu' }, 'Access key source: ' + cf.admin_key_source)),
       el('div', { class: 'box' }, el('h3', null, 'Facebook Pages'), st.pages.length ? st.pages.map(p => el('div', { class: 'row' }, el('b', null, p.name), badge(p.token_status, p.token_status === 'ok' ? 'g' : 'r'), btn('Test connection', async () => { const r = await api('POST', '/api/pages/' + p.id + '/test'); toast(r.ok ? 'Connected' : 'Failed: ' + r.error, !r.ok); render(); }, 'sm alt'))) : el('p', { class: 'mu' }, 'No Page connected. See Settings.'), el('p', { class: 'mu' }, 'Replies this hour: ' + st.caps.replies_last_hour + '/' + st.caps.limit_hour + ' · messages today: ' + st.caps.dms_today + '/' + st.caps.limit_day))),
-    el('div', { class: 'box' }, el('h3', null, 'Failed sends (real errors from Facebook)'), st.failed.length ? el('table', null, el('tr', null, ['Customer', 'What', 'Error', ''].map(x => el('th', null, x))), st.failed.map(f => el('tr', null, el('td', null, f.customer || '-'), el('td', null, f.type + ': ' + f.text), el('td', { class: 'er' }, f.error), el('td', null, el('div', { class: 'row', style: 'margin:0' }, btn('Retry', async () => { await api('POST', '/api/jobs/' + f.id + '/retry'); toast('Retrying'); render(); }, 'sm'), f.text ? btn('Copy text', () => copy(f.text), 'sm alt') : null))))) : el('p', { class: 'mu' }, 'No failed sends.')),
-    el('div', { class: 'box' }, el('h3', null, 'Waiting jobs'), pending.length ? el('table', null, pending.slice(0, 30).map(j => el('tr', null, el('td', null, fmt(j.due_at)), el('td', null, j.type + (j.origin === 'auto' ? '' : ' (you)')), el('td', null, (j.payload.text || j.payload.file || '').slice(0, 80)), el('td', { class: 'mu' }, j.note || ''), el('td', null, btn('Cancel', async () => { await api('POST', '/api/jobs/' + j.id + '/cancel'); render(); }, 'sm alt'))))) : el('p', { class: 'mu' }, 'Nothing waiting.')),
+    el('div', { class: 'box' }, el('h3', null, 'Failed sends (real errors from Facebook)'), el('table', { 'data-monitor-failed': true }, failedJobRows(st))),
+    el('div', { class: 'box' }, el('h3', null, 'Waiting jobs'), el('table', { 'data-monitor-pending': true }, pendingJobRows(pending))),
     el('div', { class: 'box' }, el('h3', null, 'Database'), el('p', null, 'Version ' + st.db.version + ' · ' + Math.round(st.db.bytes / 1024) + ' KB · last backup: ' + (st.db.last_backup || 'none') + (st.db.recovered_from ? ' · recovered from ' + st.db.recovered_from : '')), btn('Back up now', async () => { const r = await api('POST', '/api/backup'); toast('Backup saved: ' + r.file); render(); }, 'alt')));
 };
 // ---------------- Auto-Pilot
@@ -125,7 +176,7 @@ VIEWS.skills = async () => {
 };
 // ---------------- New Post
 VIEWS.newpost = async () => {
-  const [st, gs] = await Promise.all([api('GET', '/api/status'), api('GET', '/api/groups')]);
+  const st = await api('GET', '/api/status');
   const s = cache.settings;
   const b = (cache.settings && cache.settings.business) || {};
   const pr = sel([['', '(Optional: draft from catalogue)']].concat(cache.products.map(p => [p.id, p.name])), '');
@@ -162,35 +213,6 @@ VIEWS.newpost = async () => {
     ] : el('p', { class: 'mu' }, 'No Facebook Page connected yet. Connect a Page in Settings to publish live.')
   );
   pageChecks.forEach(pc => pc.input.addEventListener('change', () => updatePreview()));
-
-  // Connected groups multi-select
-  const groupsList = Array.isArray(gs) ? gs : [];
-  const groupChecks = groupsList.map(g => ({
-    id: g.id,
-    name: g.name,
-    link: g.link,
-    input: el('input', { type: 'checkbox', checked: false })
-  }));
-
-  const groupsContainer = el('div', { class: 'ctx', style: 'padding:10px;margin-top:4px' },
-    groupsList.length ? [
-      el('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px' },
-        el('b', null, 'Prepare manual posts for Groups (' + groupsList.length + ' saved):'),
-        btn('Toggle all groups', () => {
-          const allChecked = groupChecks.every(x => x.input.checked);
-          groupChecks.forEach(x => { x.input.checked = !allChecked; });
-          updatePreview();
-        }, 'sm alt')
-      ),
-      el('div', { class: 'grid g2' },
-        groupChecks.map(gc => el('label', { style: 'display:flex;gap:8px;align-items:center;cursor:pointer' },
-          gc.input,
-          el('span', null, el('b', null, gc.name), ' ', el('a', { href: gc.link, target: '_blank', rel: 'noopener noreferrer', style: 'font-size:12px;color:var(--ac);margin-left:4px' }, 'open link'))
-        ))
-      )
-    ] : el('p', { class: 'mu' }, 'No groups saved yet. You can add Facebook groups in the "Groups" tab.')
-  );
-  groupChecks.forEach(gc => gc.input.addEventListener('change', () => updatePreview()));
 
   const renderThumbs = () => {
     thumbsBox.replaceChildren(
@@ -232,15 +254,11 @@ VIEWS.newpost = async () => {
 
   const prev = el('div', { class: 'box' });
   const postResultBox = el('div', { class: 'box', style: 'display:none;background:var(--bg)' });
+  let publishButton;
 
   const updatePreview = () => {
     const selectedPages = pageChecks.filter(x => x.input.checked).map(x => x.name);
-    const selectedGroups = groupChecks.filter(x => x.input.checked).map(x => x.name);
-
-    const destParts = [];
-    if (selectedPages.length) destParts.push('Pages (' + selectedPages.length + '): ' + selectedPages.join(', '));
-    if (selectedGroups.length) destParts.push('Groups (' + selectedGroups.length + '): ' + selectedGroups.join(', '));
-    const pagesLabel = destParts.length ? destParts.join('  ·  ') : '(None selected - please choose at least one Page or Group)';
+    const pagesLabel = selectedPages.length ? 'Pages (' + selectedPages.length + '): ' + selectedPages.join(', ') : '(None selected - please choose at least one Page)';
 
     let fullCaption = '';
     if (title.value.trim()) fullCaption += title.value.trim() + '\n\n';
@@ -296,7 +314,7 @@ VIEWS.newpost = async () => {
 
   return el('div', null,
     el('h2', null, 'New Post'),
-    el('p', { class: 'sub' }, 'Publish posts immediately to connected Facebook Pages. Prepare selected Group posts for manual publishing.'),
+    el('p', { class: 'sub' }, 'Publish posts immediately to your connected Facebook Pages. Each selected image is published as a separate post.'),
     modeBar,
     el('div', { class: 'box' },
       el('h3', null, '1. Post Details'),
@@ -321,16 +339,11 @@ VIEWS.newpost = async () => {
       thumbsBox
     ),
     el('div', { class: 'box' },
-      el('h3', null, '3. Facebook Pages (Select Multiple)'),
+      el('h3', null, '3. Facebook Pages'),
       pagesContainer
     ),
     el('div', { class: 'box' },
-      el('h3', null, '4. Facebook Groups (Select Multiple)'),
-      el('p', { class: 'mu' }, 'Meta does not support publishing to Groups through the Graph API. Selected Groups will be opened for manual posting after Page publishing.'),
-      groupsContainer
-    ),
-    el('div', { class: 'box' },
-      el('h3', null, '5. Post Caption / Description'),
+      el('h3', null, '4. Post Caption / Description'),
       field('Caption', cap)
     ),
     prev,
@@ -338,16 +351,15 @@ VIEWS.newpost = async () => {
     el('div', { class: 'box' },
       el('label', { style: 'display:flex;gap:8px;align-items:center' }, ok, 'I have checked the preview and want to publish this post'),
       el('div', { class: 'row' },
-        btn('Publish Post', async () => {
+        publishButton = btn('Publish Post', async () => {
           if (!imgs.length) {
             toast('Please upload at least one image for the post.', true);
             up.focus();
             return;
           }
           const selectedPages = pageChecks.filter(x => x.input.checked).map(x => x.id);
-          const selectedGroups = groupChecks.filter(x => x.input.checked).map(x => x.id);
-          if (pagesList.length && !selectedPages.length && !selectedGroups.length) {
-            toast('Please select at least one Facebook Page or Group.', true);
+          if (pagesList.length && !selectedPages.length) {
+            toast('Please select at least one Facebook Page.', true);
             return;
           }
           if (!ok.checked) {
@@ -362,9 +374,9 @@ VIEWS.newpost = async () => {
 
           toast('Publishing post...', false);
 
+          publishButton.disabled = true;
           const r = await api('POST', '/api/posts/publish', {
             page_ids: selectedPages,
-            group_ids: selectedGroups,
             product_ids: pr.value ? [pr.value] : [],
             title: title.value.trim(),
             location: loc.value.trim(),
@@ -372,7 +384,7 @@ VIEWS.newpost = async () => {
             caption: fullCaption || title.value.trim() || 'New Post',
             confirm: true,
             require_image: true
-          });
+          }).finally(() => { publishButton.disabled = false; });
 
           postResultBox.style.display = 'block';
 
@@ -380,26 +392,10 @@ VIEWS.newpost = async () => {
             const failed = r.results.filter(x => x.status === 'failed');
             const sent = r.results.filter(x => x.result === 'sent');
             const dry = r.results.filter(x => x.result === 'dry_run');
-            const manualGroups = r.manual_groups || [];
             const postLinks = sent.map(s => {
               const postUrl = 'https://facebook.com/' + (s.meta_id || '');
               return el('a', { href: postUrl, target: '_blank', rel: 'noopener noreferrer', class: 'button sm', style: 'padding:6px 12px;text-decoration:none;display:inline-block;background:var(--ok);color:#fff;border-radius:6px;font-weight:700' }, 'View ' + s.page_name + ' · image ' + s.image_index + '/' + s.image_count + ' ↗');
             });
-            const groupSteps = manualGroups.map(group =>
-              el('div', { class: 'box' },
-                el('h3', null, group.name),
-                el('p', { class: 'mu' }, group.message),
-                ...group.posts.map(post => el('div', { class: 'box' },
-                  el('b', null, 'Separate post · image ' + post.image_index + ' of ' + post.image_count),
-                  post.image ? el('div', { class: 'row' }, el('a', { href: '/media/' + encodeURIComponent(post.image), target: '_blank', rel: 'noopener noreferrer', class: 'button sm alt' }, 'Open this image')) : null,
-                  el('div', { class: 'row' },
-                    el('a', { href: group.link, target: '_blank', rel: 'noopener noreferrer', class: 'button sm alt' }, 'Open Group'),
-                    btn('Copy post text', () => copy(post.caption), 'sm alt'),
-                    btn('Mark group posted', async () => { await api('POST', '/api/groups/' + group.id + '/posted'); toast('Group marked as posted'); }, 'sm')
-                  )
-                ))
-              )
-            );
 
             if (failed.length) {
               postResultBox.replaceChildren(
@@ -407,27 +403,21 @@ VIEWS.newpost = async () => {
                 el('p', { class: 'mu' }, 'Meta could not publish ' + failed.length + ' Page post(s):'),
                 ...failed.map(x => el('p', { class: 'mu' }, x.page_name + ' · image ' + x.image_index + '/' + x.image_count + ': ' + x.error)),
                 postLinks.length ? el('div', { class: 'row' }, ...postLinks) : null,
-                failed.some(x => /token expired|permission|oauth/i.test(x.error || '')) ? el('div', { class: 'row' }, btn('Open Settings to Reconnect', () => { location.hash = 'settings'; }, 'sm alt')) : null,
-                manualGroups.length ? el('p', { class: 'mu' }, 'Selected Facebook Groups were not sent to Meta; they require manual posting below.') : null,
-                ...groupSteps
+                failed.some(x => /token expired|permission|oauth/i.test(x.error || '')) ? el('div', { class: 'row' }, btn('Open Settings to Reconnect', () => { location.hash = 'settings'; }, 'sm alt')) : null
               );
               toast(sent.length ? 'Some Page posts failed; successful posts are listed below.' : 'Facebook Page post failed: ' + failed[0].error, true);
             } else if (sent.length) {
               postResultBox.replaceChildren(
                 el('h3', { style: 'color:var(--ok)' }, '✔ Published ' + sent.length + ' separate post(s) to Facebook Pages'),
                 el('p', null, 'Each selected image was published as its own immediate Page post with the same caption.'),
-                el('div', { class: 'row' }, ...postLinks),
-                manualGroups.length ? el('p', { class: 'mu' }, 'Facebook does not allow this app to publish to Groups. Complete the manual group steps below; no group post was sent.') : null,
-                ...groupSteps
+                el('div', { class: 'row' }, ...postLinks)
               );
-              toast(manualGroups.length ? 'Page posts are live; selected Groups need manual posting.' : 'Post is live on Facebook!');
+              toast('Post is live on Facebook!');
             } else if (dry.length) {
               postResultBox.replaceChildren(
                 el('h3', { style: 'color:var(--wn)' }, '🟡 Recorded in Dry-Run Mode (Test only)'),
                 el('p', { class: 'mu' }, 'The post was saved and simulated, but nothing was sent to Facebook because the software is in Dry-Run mode.'),
                 el('p', null, 'To publish real posts to Facebook, click "Go Live on Facebook" above or in Auto-Pilot.'),
-                manualGroups.length ? el('p', { class: 'mu' }, 'Facebook Groups cannot be published through the Graph API and require manual posting.') : null,
-                ...groupSteps,
                 el('div', { class: 'row' },
                   btn('Switch to Live Mode Now', async () => {
                     await api('PUT', '/api/settings', { live: true, confirm_live: true });
@@ -437,13 +427,8 @@ VIEWS.newpost = async () => {
                 )
               );
               toast('Recorded in Dry-run mode.');
-            } else if (manualGroups.length) {
-              postResultBox.replaceChildren(
-                el('h3', { style: 'color:var(--wn)' }, 'Facebook Group posts need your action'),
-                el('p', { class: 'mu' }, 'Meta does not support publishing to Groups through the Graph API. No automated group post was attempted.'),
-                ...groupSteps
-              );
-              toast('Group post prepared; publish it manually in Facebook.');
+            } else {
+              toast('Post request completed without a result.', true);
             }
           } else {
             toast('Post request completed without a result.', true);
@@ -496,27 +481,6 @@ VIEWS.orders = async () => {
       el('div', { class: 'grid g2' }, field('Order status', st), field('Payment', pay)), el('div', { class: 'row' }, btn('Update', async () => { const b = {}; if (st.value !== o.order_status) { b.order_status = st.value; if (['dispatched', 'delivered'].includes(st.value)) { const n = prompt('Confirm this really happened. Add a note (for example the courier reference):'); if (!n) return; b.confirm = true; b.note = n; } } if (pay.value !== o.payment_status) { b.payment_status = pay.value; if (pay.value === 'paid') { const n = prompt('Confirm the payment was really received. Add a note (method / reference):'); if (!n) return; b.confirm = true; b.note = n; } } await api('PUT', '/api/orders/' + o.id, b); toast('Updated'); render(); })), o.history.length ? el('div', { class: 'mu' }, o.history.map(h => el('div', null, fmt(h.ts) + ': ' + h.text))) : null);
   }) : el('div', { class: 'box' }, 'No orders yet. Orders appear when a customer sends their address, or you create one from a quote in Chat.'));
 };
-// ---------------- Groups
-VIEWS.groups = async () => {
-  const gs = await api('GET', '/api/groups'), nm = inp(''), lk = inp('', { placeholder: 'https://www.facebook.com/groups/...' });
-  return el('div', null,
-    el('h2', null, 'Groups'),
-    el('p', { class: 'sub' }, 'Meta does not support publishing posts to Facebook Groups through the Graph API. Use New Post to prepare the Page post, then open each selected Group, paste the text and images, and mark it posted here.'),
-    el('div', { class: 'box' },
-      el('div', { class: 'grid g2' }, field('Name', nm), field('Group link', lk)),
-      btn('Add group', async () => { await api('POST', '/api/groups', { name: nm.value, link: lk.value }); render(); })
-    ),
-    el('div', { class: 'box' }, gs.length ? el('table', null, gs.map(g => el('tr', null,
-      el('td', null, el('b', null, g.name)),
-      el('td', null, el('div', { class: 'mu' }, 'Last posted: ' + fmt(g.last_posted))),
-      el('td', null, el('div', { class: 'row', style: 'margin:0' },
-        el('a', { href: g.link, target: '_blank', rel: 'noopener noreferrer' }, 'Open group'),
-        btn('Mark posted', async () => { await api('POST', '/api/groups/' + g.id + '/posted'); render(); }, 'sm'),
-        btn('Remove', async () => { await api('DELETE', '/api/groups/' + g.id); render(); }, 'sm alt')
-      ))
-    ))) : el('p', { class: 'mu' }, 'No groups yet.'))
-  );
-};
 // ---------------- Settings
 VIEWS.settings = async () => {
   const st = await api('GET', '/api/status'), bk = await api('GET', '/api/backups'), cats = inp(cache.settings.categories.join(', ')), imp = area('', { placeholder: 'Paste the text you copied with "Copy backup" from the old Page Desk' });
@@ -542,11 +506,58 @@ async function render() {
   m.replaceChildren(el('div', { class: 'box', role: 'status' }, 'Loading ' + (TABS.find(([key]) => key === cur) || TABS[0])[1] + '…'));
   try { await refreshCache(); if (my !== rid) return; drawNav(cur); const node = await v(); if (my !== rid) return; m.replaceChildren(node); } catch (e) { if (my === rid && KEY()) m.replaceChildren(el('div', { class: 'box' }, el('h3', null, 'Something went wrong'), el('p', { class: 'er' }, e.message))); }
 }
+let liveRefreshPending = false;
+async function refreshLivePanels() {
+  const cur = (location.hash || '#dashboard').slice(1);
+  if (liveRefreshPending || document.hidden || !KEY() || !['needs', 'monitor', 'dashboard'].includes(cur)) return;
+  liveRefreshPending = true;
+  try {
+    await refreshCache();
+    updateNeedsBadge();
+    if (cur === 'dashboard') {
+      const [d, st] = await Promise.all([api('GET', '/api/dashboard'), api('GET', '/api/status')]);
+      if (cur !== (location.hash || '#dashboard').slice(1)) return;
+      const metrics = document.querySelector('[data-dashboard-metrics]');
+      const recent = document.querySelector('[data-dashboard-recent]');
+      const mode = document.querySelector('[data-dashboard-mode]');
+      const connection = document.querySelector('[data-dashboard-connection]');
+      if (metrics) metrics.replaceChildren(...dashboardStats(d));
+      if (recent) recent.replaceChildren(...recentRows(d.recent));
+      if (mode) mode.replaceChildren(modeBanner());
+      if (connection) {
+        connection.className = st.meta_ready ? '' : 'box';
+        connection.replaceChildren(...(st.meta_ready ? [] : [
+          el('h3', null, 'Facebook is not connected yet'),
+          el('p', { class: 'mu' }, 'The assistant works in test mode. To receive real comments and messages, follow SETUP-META.md and use Settings.')
+        ]));
+      }
+    } else if (cur === 'monitor') {
+      const [st, pending] = await Promise.all([api('GET', '/api/status'), api('GET', '/api/jobs?status=pending')]);
+      if (cur !== (location.hash || '#dashboard').slice(1)) return;
+      const summary = document.querySelector('[data-monitor-summary]');
+      const failed = document.querySelector('[data-monitor-failed]');
+      const waiting = document.querySelector('[data-monitor-pending]');
+      const mode = document.querySelector('[data-monitor-mode]');
+      if (summary) summary.replaceChildren(...monitorStats(st));
+      if (failed) failed.replaceChildren(...failedJobRows(st));
+      if (waiting) waiting.replaceChildren(...pendingJobRows(pending));
+      if (mode) mode.replaceChildren(modeBanner());
+    }
+    const error = document.querySelector('[data-refresh-error]');
+    if (error) error.textContent = '';
+  } catch (e) {
+    const error = document.querySelector('[data-refresh-error]');
+    if (error) error.textContent = 'Could not refresh current data: ' + e.message;
+    console.error('Background data refresh failed:', e);
+  } finally {
+    liveRefreshPending = false;
+  }
+}
 async function start() {
   if (!KEY()) return showLogin();
   try { await api('GET', '/api/status'); document.getElementById('login').hidden = true; document.getElementById('app').hidden = false; render(); } catch (e) { showLogin(); }
 }
 document.getElementById('go').addEventListener('click', async () => { sessionStorage.setItem('fsa-key', document.getElementById('key').value.trim()); document.getElementById('lerr').textContent = ''; try { await api('GET', '/api/status'); start(); } catch (e) { document.getElementById('lerr').textContent = e.message; } });
 document.getElementById('key').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('go').click(); });
-window.addEventListener('hashchange', render); setInterval(() => { if (!document.hidden && KEY() && ['needs', 'monitor', 'dashboard'].includes((location.hash || '#dashboard').slice(1)) && !(document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName))) render(); }, 15000);
+window.addEventListener('hashchange', render); setInterval(refreshLivePanels, 30000);
 start();

@@ -59,7 +59,7 @@ You can keep the existing GitHub repository and Vercel project. Commit and push 
 | `src/meta.js` | Official Meta Graph API client and webhook parsing/signature check. |
 | `src/db.js` | Database file with atomic saves, hourly backups, migrations and crash recovery. |
 | `src/server.js` | Web server, dashboard API, Facebook login and webhook. |
-| `public/` | The dashboard (Dashboard, Needs me, Chat, Monitor, Auto-Pilot, Skills & Log, New Post, Business, Catalogue, Reviews, Leads, Orders, Groups, Settings, History). |
+| `public/` | The dashboard (Dashboard, Needs me, Chat, Monitor, Auto-Pilot, Skills & Log, New Post, Business, Catalogue, Reviews, Leads, Orders, Settings, History). |
 | `tests/` | `run-tests.js` (22 end-to-end tests with a fake Meta server) and `ui-test.py` (browser test). |
 
 ## How it behaves
@@ -82,7 +82,7 @@ npm test
 ## Honest limitations
 - The reply engine is rule-based with fuzzy matching, not a large language model. That is deliberate: it cannot invent prices or promises. It does not read images and does not use post captions for matching (only your post-to-product links).
 - Real Facebook sending was tested only against a fake Meta server. The first live test must be on your own Page and your own account. Meta app review or permissions may be needed (see SETUP-META.md).
-- New Post publishes immediately to selected Facebook Pages, creating one separate post per selected image with the same caption. Meta's Graph API does not support publishing to Groups, so selected Groups are shown as manual follow-ups with one manual post step per image; open the Group, use the matching image and caption, then mark it posted. Group cooldowns and scheduled New Posts are not used.
+- New Post publishes immediately to selected Facebook Pages, creating one separate post per selected image with the same caption. Group publishing and connection controls are not exposed in the dashboard because Meta's Graph API does not support publishing to Groups.
 - Facebook only allows automatic messages within 24 hours of the customer's last message. Later follow-ups become tasks for you.
 - There is one access key (no separate staff accounts). Keep the computer and the key private.
 - Pending replies are saved, so a restart does not lose them. The software must be running (and reachable on the internet) to receive Facebook events.
