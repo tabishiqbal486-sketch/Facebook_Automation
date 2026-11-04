@@ -127,7 +127,8 @@ function createApp(o = {}) {
     if (!r.body.confirm) throw bad('Please preview and confirm before publishing');
     const pids = list(r.body.page_ids || r.body.page_id);
     const grpIds = list(r.body.group_ids);
-    const groups = grpIds.map(id => db.get('groups', id)).filter(Boolean);
+    const groups = grpIds.map(id => db.get('groups', id));
+    if (groups.some(group => !group)) throw bad('Choose an existing group');
     if (!pids.length && !groups.length) {
       if (db.settings.live) throw bad('Choose at least one connected Page or Group');
       pids.push('dry');
@@ -142,9 +143,7 @@ function createApp(o = {}) {
     const files = Array.from(new Set(directFiles.concat(prods.flatMap(p => p.images.slice(0, 10)))));
     if (!files.length && r.body.require_image) throw bad('Please upload or select at least one image');
     
-    const isScheduled = !!r.body.when && +r.body.when > (now() + 5000);
     const soon = now() + (engine.fast ? 20 : 1000);
-    const when = isScheduled ? +r.body.when : soon;
     const jobs = [];
 
     // Publish to Pages
@@ -152,7 +151,7 @@ function createApp(o = {}) {
       const j = engine.addJob({
         type: 'publish_post',
         key: null,
-        due_at: when,
+        due_at: soon,
         origin: 'owner',
         customer_id: 'none',
         page_id: page.id,
@@ -168,48 +167,29 @@ function createApp(o = {}) {
       jobs.push(j);
     }
 
-    // Publish to Groups
-    const primaryPage = pages[0] || db.list('pages')[0] || { id: 'dry', name: 'Dry-run' };
+    const manualGroups = groups.map(group => ({
+      id: group.id,
+      name: group.name,
+      link: group.link,
+      status: 'manual_required',
+      message: 'Meta does not support publishing posts to Facebook Groups through the Graph API.'
+    }));
     for (const group of groups) {
-      const match = String(group.link || '').match(/groups\/([^/?#]+)/);
-      const targetId = group.group_id || (match ? match[1] : null) || group.id;
-      const j = engine.addJob({
-        type: 'publish_post',
-        key: null,
-        due_at: when,
-        origin: 'owner',
-        customer_id: 'none',
-        page_id: primaryPage.id,
-        payload: {
-          text,
-          title: r.body.title || '',
-          location: r.body.location || '',
-          target_id: targetId,
-          group_db_id: group.id,
-          group_name: group.name,
-          files: files.slice(0, 10),
-          product_ids: prods.map(p => p.id)
-        }
-      });
-      group.last_posted = now();
-      db.log('post', (db.settings.live ? 'Group post queued' : 'Group post recorded in dry-run mode') + ' for group ' + group.name + ': ' + text.slice(0, 50), j.id);
-      jobs.push(j);
+      db.log('post', 'Manual Facebook Group post required for ' + group.name + ': ' + text.slice(0, 50), group.id);
     }
 
-    // Immediate execution for non-scheduled posts (ensures posts publish instantly on Vercel and locally)
+    // Page posts are sent immediately; Facebook Group posts require manual publishing.
     const results = [];
-    if (!isScheduled) {
-      for (const j of jobs) {
-        await engine.runJob(j);
-        results.push({
-          id: j.id,
-          page_id: j.page_id,
-          status: j.status,
-          result: j.result,
-          meta_id: j.meta_id || null,
-          error: j.error || null
-        });
-      }
+    for (const j of jobs) {
+      await engine.runJob(j);
+      results.push({
+        id: j.id,
+        page_id: j.page_id,
+        status: j.status,
+        result: j.result,
+        meta_id: j.meta_id || null,
+        error: j.error || null
+      });
     }
 
     db.save();
@@ -217,7 +197,8 @@ function createApp(o = {}) {
       job: jobs[0],
       jobs,
       results,
-      executed_immediately: !isScheduled,
+      manual_groups: manualGroups,
+      executed_immediately: true,
       live: db.settings.live
     };
   });
@@ -284,7 +265,7 @@ function createApp(o = {}) {
   R('GET', '/api/decisions', r => db.list('decisions').sort((a, b) => b.ts - a.ts).slice(0, 100).map(d => Object.assign({}, d, { text: (db.get('messages', d.message_id) || {}).text, product: (db.get('products', d.product_id || '') || {}).name })));
   // ---------- groups & reviews (manual helpers) ----------
   R('GET', '/api/groups', () => db.list('groups').sort((a, b) => a.name.localeCompare(b.name)));
-  R('POST', '/api/groups', r => { const l = String(r.body.link || '').trim(); if (!/^https:\/\/(www\.|m\.)?facebook\.com\//.test(l)) throw bad('Paste a facebook.com group link'); const g = db.put('groups', { id: uid('grp'), name: String(r.body.name || l.split('/').filter(Boolean).pop()).slice(0, 80), link: l, cooldown_days: Math.max(0, +r.body.cooldown_days || 1), last_posted: null }); db.save(); return g; });
+  R('POST', '/api/groups', r => { const l = String(r.body.link || '').trim(); if (!/^https:\/\/(www\.|m\.)?facebook\.com\//.test(l)) throw bad('Paste a facebook.com group link'); const g = db.put('groups', { id: uid('grp'), name: String(r.body.name || l.split('/').filter(Boolean).pop()).slice(0, 80), link: l, last_posted: null }); db.save(); return g; });
   R('POST', '/api/groups/:id/posted', r => { const g = ids('groups')(r); if (!g) throw bad('Not found', 404); g.last_posted = now(); db.save(); return g; });
   R('DELETE', '/api/groups/:id', r => { db.del('groups', r.params.id); db.save(); return { ok: true }; });
   R('GET', '/api/reviews', () => db.list('reviews').sort((a, b) => b.created - a.created));

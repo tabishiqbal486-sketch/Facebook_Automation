@@ -82,7 +82,7 @@ npm test
 ## Honest limitations
 - The reply engine is rule-based with fuzzy matching, not a large language model. That is deliberate: it cannot invent prices or promises. It does not read images and does not use post captions for matching (only your post-to-product links).
 - Real Facebook sending was tested only against a fake Meta server. The first live test must be on your own Page and your own account. Meta app review or permissions may be needed (see SETUP-META.md).
-- Facebook does not allow apps to post into groups. *Groups* is a checklist for manual posting.
+- New Post publishes immediately to selected Facebook Pages. Meta's Graph API does not support publishing to Groups, so selected Groups are shown as manual follow-ups; open the Group, paste the post text and images, then mark it posted. Group cooldowns and scheduled New Posts are not used.
 - Facebook only allows automatic messages within 24 hours of the customer's last message. Later follow-ups become tasks for you.
 - There is one access key (no separate staff accounts). Keep the computer and the key private.
 - Pending replies are saved, so a restart does not lose them. The software must be running (and reachable on the internet) to receive Facebook events.

@@ -132,7 +132,6 @@ VIEWS.newpost = async () => {
   const title = inp('', { placeholder: 'e.g. Luxury Velvet Corner Sofa (Brand New)' });
   const loc = inp(b.location || '', { placeholder: 'e.g. Birmingham, Manchester, or Nationwide UK' });
   const cap = area('', { style: 'min-height:140px', placeholder: 'Write details, prices, dimensions, delivery options...' });
-  const when = el('input', { type: 'datetime-local' });
   const ok = el('input', { type: 'checkbox' });
   const up = el('input', { type: 'file', accept: 'image/*', multiple: true });
 
@@ -176,7 +175,7 @@ VIEWS.newpost = async () => {
   const groupsContainer = el('div', { class: 'ctx', style: 'padding:10px;margin-top:4px' },
     groupsList.length ? [
       el('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px' },
-        el('b', null, 'Post to Connected Groups (' + groupsList.length + ' saved):'),
+        el('b', null, 'Prepare manual posts for Groups (' + groupsList.length + ' saved):'),
         btn('Toggle all groups', () => {
           const allChecked = groupChecks.every(x => x.input.checked);
           groupChecks.forEach(x => { x.input.checked = !allChecked; });
@@ -297,7 +296,7 @@ VIEWS.newpost = async () => {
 
   return el('div', null,
     el('h2', null, 'New Post'),
-    el('p', { class: 'sub' }, 'Create and publish Facebook posts with multiple images across multiple pages and connected groups.'),
+    el('p', { class: 'sub' }, 'Publish posts immediately to connected Facebook Pages. Prepare selected Group posts for manual publishing.'),
     modeBar,
     el('div', { class: 'box' },
       el('h3', null, '1. Post Details'),
@@ -327,12 +326,12 @@ VIEWS.newpost = async () => {
     ),
     el('div', { class: 'box' },
       el('h3', null, '4. Facebook Groups (Select Multiple)'),
+      el('p', { class: 'mu' }, 'Meta does not support publishing to Groups through the Graph API. Selected Groups will be opened for manual posting after Page publishing.'),
       groupsContainer
     ),
     el('div', { class: 'box' },
-      el('h3', null, '5. Caption & Scheduling'),
-      field('Post Caption / Description', cap),
-      field('Schedule for later (optional)', when)
+      el('h3', null, '5. Post Caption / Description'),
+      field('Caption', cap)
     ),
     prev,
     postResultBox,
@@ -364,51 +363,67 @@ VIEWS.newpost = async () => {
           toast('Publishing post...', false);
 
           const r = await api('POST', '/api/posts/publish', {
-            page_ids: selectedPages.length ? selectedPages : (pagesList.length ? [pagesList[0].id] : undefined),
+            page_ids: selectedPages,
             group_ids: selectedGroups,
-            page_id: selectedPages[0] || (pagesList[0] && pagesList[0].id) || 'dry',
             product_ids: pr.value ? [pr.value] : [],
             title: title.value.trim(),
             location: loc.value.trim(),
             images: imgs,
             caption: fullCaption || title.value.trim() || 'New Post',
             confirm: true,
-            require_image: true,
-            when: when.value ? new Date(when.value).getTime() : undefined
+            require_image: true
           });
 
           postResultBox.style.display = 'block';
 
-          if (r.executed_immediately && r.results && r.results.length) {
+          if (r.executed_immediately) {
             const failed = r.results.filter(x => x.status === 'failed');
             const sent = r.results.filter(x => x.result === 'sent');
             const dry = r.results.filter(x => x.result === 'dry_run');
+            const manualGroups = r.manual_groups || [];
+            const postLinks = sent.map(s => {
+              const postUrl = 'https://facebook.com/' + (s.meta_id || '');
+              return el('a', { href: postUrl, target: '_blank', rel: 'noopener noreferrer', class: 'button sm', style: 'padding:6px 12px;text-decoration:none;display:inline-block;background:var(--ok);color:#fff;border-radius:6px;font-weight:700' }, 'View Page Post (' + (s.meta_id || 'link') + ') ↗');
+            });
+            const groupSteps = manualGroups.flatMap(group => [
+              el('div', { class: 'box' },
+                el('b', null, group.name),
+                el('p', { class: 'mu' }, group.message),
+                imgs.length ? el('div', { class: 'row' }, ...imgs.map((file, index) => el('a', { href: '/media/' + encodeURIComponent(file), target: '_blank', rel: 'noopener noreferrer' }, 'Open image ' + (index + 1)))) : null,
+                el('div', { class: 'row' },
+                  el('a', { href: group.link, target: '_blank', rel: 'noopener noreferrer', class: 'button sm alt' }, 'Open Group'),
+                  btn('Copy post text', () => copy(fullCaption), 'sm alt'),
+                  btn('Mark as posted', async () => { await api('POST', '/api/groups/' + group.id + '/posted'); toast('Group marked as posted'); }, 'sm')
+                )
+              )
+            ]);
 
             if (failed.length) {
               postResultBox.replaceChildren(
-                el('h3', { style: 'color:var(--er)' }, '✖ Facebook Error: ' + failed[0].error),
-                el('p', { class: 'mu' }, 'Meta Graph API rejected the post: ' + failed[0].error),
-                el('p', { class: 'mu' }, 'Tip: Ensure you have reconnected your Facebook Pages in Settings after updating permissions, and that BASE_URL is set to a public https address.'),
-                el('div', { class: 'row' }, btn('Open Settings to Reconnect', () => { location.hash = 'settings'; }, 'sm alt'))
+                el('h3', { style: 'color:var(--er)' }, sent.length ? '⚠ Some Facebook Page posts failed' : '✖ Facebook Page error'),
+                el('p', { class: 'mu' }, 'Meta could not publish to ' + failed.length + ' selected Page(s): ' + failed[0].error),
+                postLinks.length ? el('div', { class: 'row' }, ...postLinks) : null,
+                failed.some(x => /token expired|permission|oauth/i.test(x.error || '')) ? el('div', { class: 'row' }, btn('Open Settings to Reconnect', () => { location.hash = 'settings'; }, 'sm alt')) : null,
+                manualGroups.length ? el('p', { class: 'mu' }, 'Selected Facebook Groups were not sent to Meta; they require manual posting below.') : null,
+                ...groupSteps
               );
-              toast('Post failed: ' + failed[0].error, true);
+              toast(sent.length ? 'Some Page posts failed; successful posts are listed below.' : 'Facebook Page post failed: ' + failed[0].error, true);
             } else if (sent.length) {
               postResultBox.replaceChildren(
-                el('h3', { style: 'color:var(--ok)' }, '✔ Published Successfully to Facebook!'),
-                el('p', null, 'Your post is now live on Facebook.'),
-                el('div', { class: 'row' },
-                  ...sent.map(s => {
-                    const postUrl = 'https://facebook.com/' + (s.meta_id || '');
-                    return el('a', { href: postUrl, target: '_blank', rel: 'noopener noreferrer', class: 'button sm', style: 'padding:6px 12px;text-decoration:none;display:inline-block;background:var(--ok);color:#fff;border-radius:6px;font-weight:700' }, 'View Post on Facebook (' + (s.meta_id || 'link') + ') ↗');
-                  })
-                )
+                el('h3', { style: 'color:var(--ok)' }, '✔ Published to ' + sent.length + ' Facebook Page(s)'),
+                el('p', null, 'Page posts were published immediately.'),
+                el('div', { class: 'row' }, ...postLinks),
+                manualGroups.length ? el('p', { class: 'mu' }, 'Facebook does not allow this app to publish to Groups. Complete the manual group steps below; no group post was sent.') : null,
+                ...groupSteps
               );
-              toast('Post is live on Facebook!');
+              toast(manualGroups.length ? 'Page posts are live; selected Groups need manual posting.' : 'Post is live on Facebook!');
             } else if (dry.length) {
               postResultBox.replaceChildren(
                 el('h3', { style: 'color:var(--wn)' }, '🟡 Recorded in Dry-Run Mode (Test only)'),
                 el('p', { class: 'mu' }, 'The post was saved and simulated, but nothing was sent to Facebook because the software is in Dry-Run mode.'),
                 el('p', null, 'To publish real posts to Facebook, click "Go Live on Facebook" above or in Auto-Pilot.'),
+                manualGroups.length ? el('p', { class: 'mu' }, 'Facebook Groups cannot be published through the Graph API and require manual posting.') : null,
+                ...groupSteps,
                 el('div', { class: 'row' },
                   btn('Switch to Live Mode Now', async () => {
                     await api('PUT', '/api/settings', { live: true, confirm_live: true });
@@ -418,9 +433,16 @@ VIEWS.newpost = async () => {
                 )
               );
               toast('Recorded in Dry-run mode.');
+            } else if (manualGroups.length) {
+              postResultBox.replaceChildren(
+                el('h3', { style: 'color:var(--wn)' }, 'Facebook Group posts need your action'),
+                el('p', { class: 'mu' }, 'Meta does not support publishing to Groups through the Graph API. No automated group post was attempted.'),
+                ...groupSteps
+              );
+              toast('Group post prepared; publish it manually in Facebook.');
             }
           } else {
-            toast('Post queued for scheduled publishing.');
+            toast('Post request completed without a result.', true);
           }
         })
       )
@@ -472,9 +494,24 @@ VIEWS.orders = async () => {
 };
 // ---------------- Groups
 VIEWS.groups = async () => {
-  const gs = await api('GET', '/api/groups'), nm = inp(''), lk = inp('', { placeholder: 'https://www.facebook.com/groups/...' }), cd = inp(1, { type: 'number' });
-  return el('div', null, el('h2', null, 'Groups'), el('p', { class: 'sub' }, 'Facebook does not allow apps to post into groups, so this is a checklist: copy your post, open the group, paste, then mark it posted.'), el('div', { class: 'box' }, el('div', { class: 'grid g3' }, field('Name', nm), field('Group link', lk), field('Wait between posts (days)', cd)), btn('Add group', async () => { await api('POST', '/api/groups', { name: nm.value, link: lk.value, cooldown_days: cd.value }); render(); })),
-    el('div', { class: 'box' }, gs.length ? el('table', null, gs.map(g => { const wait = g.last_posted && Date.now() - g.last_posted < g.cooldown_days * 864e5; return el('tr', null, el('td', null, el('b', null, g.name)), el('td', null, wait ? el('span', { class: 'wn' }, 'Wait until ' + fmt(g.last_posted + g.cooldown_days * 864e5)) : el('span', { class: 'ok' }, 'Ready'), el('div', { class: 'mu' }, 'Last posted: ' + fmt(g.last_posted))), el('td', null, el('div', { class: 'row', style: 'margin:0' }, el('a', { href: g.link, target: '_blank', rel: 'noopener noreferrer' }, 'Open group'), btn('Mark posted', async () => { await api('POST', '/api/groups/' + g.id + '/posted'); render(); }, 'sm'), btn('Remove', async () => { await api('DELETE', '/api/groups/' + g.id); render(); }, 'sm alt')))); })) : el('p', { class: 'mu' }, 'No groups yet.')));
+  const gs = await api('GET', '/api/groups'), nm = inp(''), lk = inp('', { placeholder: 'https://www.facebook.com/groups/...' });
+  return el('div', null,
+    el('h2', null, 'Groups'),
+    el('p', { class: 'sub' }, 'Meta does not support publishing posts to Facebook Groups through the Graph API. Use New Post to prepare the Page post, then open each selected Group, paste the text and images, and mark it posted here.'),
+    el('div', { class: 'box' },
+      el('div', { class: 'grid g2' }, field('Name', nm), field('Group link', lk)),
+      btn('Add group', async () => { await api('POST', '/api/groups', { name: nm.value, link: lk.value }); render(); })
+    ),
+    el('div', { class: 'box' }, gs.length ? el('table', null, gs.map(g => el('tr', null,
+      el('td', null, el('b', null, g.name)),
+      el('td', null, el('div', { class: 'mu' }, 'Last posted: ' + fmt(g.last_posted))),
+      el('td', null, el('div', { class: 'row', style: 'margin:0' },
+        el('a', { href: g.link, target: '_blank', rel: 'noopener noreferrer' }, 'Open group'),
+        btn('Mark posted', async () => { await api('POST', '/api/groups/' + g.id + '/posted'); render(); }, 'sm'),
+        btn('Remove', async () => { await api('DELETE', '/api/groups/' + g.id); render(); }, 'sm alt')
+      ))
+    ))) : el('p', { class: 'mu' }, 'No groups yet.'))
+  );
 };
 // ---------------- Settings
 VIEWS.settings = async () => {

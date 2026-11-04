@@ -118,6 +118,7 @@ class Engine {
     const stop = (st, err) => { j.status = st; j.error = err; j.finished = now(); setM(st === 'cancelled' ? 'cancelled' : 'failed', err); db.log('job', st + ': ' + j.type + ' - ' + (err || ''), j.id); };
     if (j.origin === 'auto' && this.s.autopilot !== 'on') return;
     const isPost = j.type === 'publish_post';
+    if (isPost && j.payload && j.payload.group_db_id) return stop('failed', 'Facebook Group posts must be published manually; Meta does not support them through the Graph API');
     if (!c && !isPost) return stop('failed', 'Customer missing');
     if (c && c.opt_out && !(m && m.holding === false && j.payload.text === 'No problem, we will not message you again.') && j.payload.text !== 'No problem, we will not message you again.') return stop('cancelled', 'Customer opted out');
     if (j.origin === 'auto') { const hr = db.filter('jobs', x => x.origin === 'auto' && x.status === 'done' && x.finished > now() - 3600e3).length, dy = db.filter('jobs', x => x.origin === 'auto' && x.status === 'done' && ['dm', 'private_reply'].includes(x.type) && x.finished > now() - 864e5).length; if (hr >= this.s.caps.repliesPerHour || dy >= this.s.caps.dmsPerDay) { j.due_at = now() + 600e3; j.note = 'Delayed by safety limit'; return; } }
@@ -126,7 +127,6 @@ class Engine {
     if (!this.s.live || sim) {
       j.status = 'done'; j.result = sim ? 'simulated' : 'dry_run'; j.finished = now(); setM(sim ? 'simulated' : 'dry_run');
       if (j.type === 'private_reply') { const cm = db.find('messages', x => x.comment_id === j.payload.comment_id && x.direction === 'in'); if (cm) cm.private_used = true; }
-      if (j.payload && j.payload.group_db_id) { const g = db.get('groups', j.payload.group_db_id); if (g) { g.last_posted = now(); db.save(); } }
       return;
     }
     if (!page) return stop('failed', 'Facebook Page is not connected');
@@ -137,16 +137,14 @@ class Engine {
     else if (j.type === 'dm') r = await this.meta.sendDM(token, page.id, c.psid || c.platform_id, j.payload.text);
     else if (j.type === 'image') { const url = this.imageUrl(j.payload.file); if (!url) return stop('failed', 'BASE_URL is not set, so Facebook cannot fetch the photo'); r = await this.meta.sendImage(token, page.id, c.psid || c.platform_id, url); }
     else if (j.type === 'publish_post') {
-      const targetId = (j.payload && j.payload.target_id) || page.id;
-      r = await this.meta.publishPost(token, targetId, j.payload.text, (j.payload.files || []).map(f => this.imageUrl(f)).filter(Boolean));
+      r = await this.meta.publishPost(token, page.id, j.payload.text, (j.payload.files || []).map(f => this.imageUrl(f)).filter(Boolean));
     }
     else return stop('failed', 'Unknown job type');
     if (r.ok) {
       j.status = 'done'; j.finished = now(); j.result = 'sent'; const mid = r.data.message_id || r.data.id || null; j.meta_id = mid; setM('sent', null, mid);
       if (j.type === 'private_reply') { const cm = db.find('messages', x => x.comment_id === j.payload.comment_id && x.direction === 'in'); if (cm) cm.private_used = true; if (r.data.recipient_id) c.psid = String(r.data.recipient_id); }
       if (j.type === 'publish_post' && r.data.id) {
-        db.put('posts', { id: uid('post'), post_id: r.data.id, page_id: page.id, group_id: (j.payload && j.payload.group_db_id) || null, product_ids: j.payload.product_ids || [], caption: j.payload.text, title: (j.payload && j.payload.title) || '', location: (j.payload && j.payload.location) || '', images: (j.payload && j.payload.files) || [], verified: true, source: (j.payload && j.payload.group_db_id) ? 'group-post' : 'created-here', created: now() });
-        if (j.payload && j.payload.group_db_id) { const gr = db.get('groups', j.payload.group_db_id); if (gr) { gr.last_posted = now(); db.save(); } }
+        db.put('posts', { id: uid('post'), post_id: r.data.id, page_id: page.id, product_ids: j.payload.product_ids || [], caption: j.payload.text, title: (j.payload && j.payload.title) || '', location: (j.payload && j.payload.location) || '', images: (j.payload && j.payload.files) || [], verified: true, source: 'created-here', created: now() });
       }
       db.log('job', 'sent ' + j.type, j.id); return;
     }
