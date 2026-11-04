@@ -236,6 +236,10 @@ function createApp(o = {}) {
     return Object.assign(postBatchView(batchId), { jobs: jobs.map(j => ({ id: j.id, page_id: j.page_id })), manual_groups: manualGroups, live: db.settings.live });
   });
   R('GET', '/api/post-batches/:id', r => postBatchView(r.params.id));
+  R('POST', '/api/post-batches/:id/process', async r => {
+    await engine.tick(r.params.id);
+    return postBatchView(r.params.id);
+  });
   R('POST', '/api/post-batches/:id/retry-failed', r => {
     const jobs = db.filter('jobs', j => j.batch_id === r.params.id && j.status === 'failed');
     if (!jobs.length) throw bad('This batch has no safely retryable failed posts', 409);

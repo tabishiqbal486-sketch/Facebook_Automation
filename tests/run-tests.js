@@ -24,7 +24,7 @@ const JPEG = 'data:image/jpeg;base64,' + Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0,
   await new Promise(r => mockSrv.listen(0, '127.0.0.1', r)); gport = mockSrv.address().port; dir = mk(); await boot();
   app.db.put('pages', { id: 'PAGE1', name: 'Test Page', token_enc: U.encrypt(TOKEN, 'unit-test-secret'), token_status: 'ok', connected_at: Date.now() }); app.db.save();
   console.log('\nRunning tests (' + dir + ')\n');
-  await test('01 application starts, rejects missing or wrong access key', async () => { assert.strictEqual((await api('GET', '/api/status', null, '')).status, 401); assert.strictEqual((await api('GET', '/api/status', null, 'wrong-key-wrong')).status, 401); const s = await api('GET', '/api/status'); assert.strictEqual(s.status, 200); assert.strictEqual(s.body.live, false, 'must start in dry-run'); });
+  await test('01 application starts, serves its favicon and rejects missing or wrong access key', async () => { const page = await fetch(base + '/'); assert((await page.text()).includes('href="/favicon.svg"')); const icon = await fetch(base + '/favicon.svg'); assert.strictEqual(icon.status, 200); assert((await icon.text()).includes('<svg')); assert.strictEqual((await api('GET', '/api/status', null, '')).status, 401); assert.strictEqual((await api('GET', '/api/status', null, 'wrong-key-wrong')).status, 401); const s = await api('GET', '/api/status'); assert.strictEqual(s.status, 200); assert.strictEqual(s.body.live, false, 'must start in dry-run'); });
   await test('02 first run has the Dylan Sofa; products can be added, validated and updated', async () => {
     const l = await api('GET', '/api/products'); assert(l.body.some(p => p.name === 'Dylan Sofa' && p.price_pence === 34900));
     assert.strictEqual((await api('POST', '/api/products', { name: 'Bad', price: '-5' })).status, 400); assert.strictEqual((await api('POST', '/api/products', { name: '' })).status, 400);
@@ -117,8 +117,10 @@ const JPEG = 'data:image/jpeg;base64,' + Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0,
     const finishBatch = async id => {
       let state;
       for (let i = 0; i < 10; i++) {
-        await sleep(30); await app.engine.tick();
-        state = (await api('GET', '/api/post-batches/' + id)).body;
+        await sleep(30);
+        const response = await api('POST', '/api/post-batches/' + id + '/process', {});
+        assert.strictEqual(response.status, 200, 'batch processing endpoint succeeds');
+        state = response.body;
         if (state.status !== 'processing') return state;
       }
       throw new Error('Post batch did not finish: ' + id);

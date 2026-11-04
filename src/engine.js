@@ -106,12 +106,13 @@ class Engine {
     const j = this.addJob({ type: msg.channel === 'comment' ? 'private_reply' : 'dm', key: null, due_at: now() + (this.fast ? 20 : 1000), origin: 'owner', customer_id: cid, page_id: msg.page_id, payload: { text: text.trim(), comment_id: msg.comment_id } });
     const m = this.db.put('messages', { id: uid('msg'), customer_id: cid, direction: 'out', channel: 'inbox', text: text.trim(), ts: now(), status: 'queued', job_id: j.id, manual: true }); j.message_id = m.id; this.db.log('message', 'Owner message queued to ' + (c.name || cid), cid); this.db.save(); return j;
   }
-  async tick() {
+  async tick(batchId) {
     if (this.ticking) return; this.ticking = true;
     try {
-      const db = this.db, due = db.filter('jobs', j => j.status === 'pending' && j.due_at <= now()).sort((a, b) => a.due_at - b.due_at).slice(0, 10);
+      const db = this.db, due = db.filter('jobs', j => j.status === 'pending' && j.due_at <= now() && (!batchId || j.batch_id === batchId)).sort((a, b) => a.due_at - b.due_at).slice(0, 10);
       for (const j of due) await this.runJob(j);
-      this.runFollowups(); db.save();
+      if (!batchId) this.runFollowups();
+      db.save();
     } finally { this.ticking = false; }
   }
   windowOk(j, c) {

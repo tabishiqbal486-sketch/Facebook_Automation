@@ -293,7 +293,7 @@ VIEWS.newpost = async () => {
     let batch;
     try {
       do {
-        batch = await api('GET', '/api/post-batches/' + encodeURIComponent(batchId));
+        batch = await api('POST', '/api/post-batches/' + encodeURIComponent(batchId) + '/process', {});
         if (batch.status === 'processing') {
           showPublishPopup(
             el('div', { style: 'font-size:34px;margin-bottom:8px' }, '⏳'),

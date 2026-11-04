@@ -78,7 +78,7 @@ npm test
 ## Honest limitations
 - The reply engine is rule-based with fuzzy matching, not a large language model. That is deliberate: it cannot invent prices or promises. It does not read images and does not use post captions for matching (only your post-to-product links).
 - Real Facebook sending was tested only against a fake Meta server. The first live test must be on your own Page and your own account. Meta app review or permissions may be needed (see SETUP-META.md).
-- New Post durably queues publishing to selected Facebook Pages, creating one separate post per selected image with the same caption. The local worker starts within about a second; hosted processing follows the configured cron interval. Group publishing and connection controls are not exposed in the dashboard because Meta's Graph API does not support publishing to Groups.
+- New Post durably queues publishing to selected Facebook Pages, creating one separate post per selected image with the same caption. The local worker starts within about a second; hosted publishing advances the selected batch while its status is checked, so it does not depend on a hosted Cron Job. Cron remains necessary for other scheduled background jobs. Group publishing and connection controls are not exposed in the dashboard because Meta's Graph API does not support publishing to Groups.
 - Facebook only allows automatic messages within 24 hours of the customer's last message. Later follow-ups become tasks for you.
 - There is one access key (no separate staff accounts). Keep the computer and the key private.
 - Pending replies are saved, so a restart does not lose them. The software must be running (and reachable on the internet) to receive Facebook events.
